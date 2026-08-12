@@ -11,14 +11,18 @@ let package = Package(
         .package(url: "https://github.com/vapor/vapor.git", from: "4.121.4"),
         // 🔵 Non-blocking, event-driven networking for Swift. Used for custom executors
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.101.0"),
+        // Postgres client
+        .package(url: "https://github.com/vapor/postgres-nio.git", from: "1.33.1"),
     ],
     targets: [
         .executableTarget(
             name: "NexusKb",
             dependencies: [
                 .product(name: "Vapor", package: "vapor"),
+                .product(name: "PostgresNIO", package: "postgres-nio"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
+
             ],
             swiftSettings: swiftSettings
         ),
