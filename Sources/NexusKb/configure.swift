@@ -1,4 +1,5 @@
 import Vapor
+import Queues
 
 /// configures your application
 func configure(_ app: Application) async throws {
@@ -7,7 +8,17 @@ func configure(_ app: Application) async throws {
     
     // configure postgres
     try await app.configurePostgres()
-
+    
+    // configure Vapor Queues using Postgres
+    app.queues.use(
+        custom: PostgresQueuesDriver(
+            client: app.postgres
+        )
+    )
+    
+    app.queues.configuration.workerCount = 1
+    app.queues.add(HelloJob())
+    
     // register routes
     try routes(app)
 }

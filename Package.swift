@@ -13,6 +13,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.101.0"),
         // Postgres client
         .package(url: "https://github.com/vapor/postgres-nio.git", from: "1.33.1"),
+        // Vapor Queues to build on top of Postgres
+        .package(url: "https://github.com/vapor/queues.git", from: "1.18.0"),
     ],
     targets: [
         .executableTarget(
@@ -22,7 +24,7 @@ let package = Package(
                 .product(name: "PostgresNIO", package: "postgres-nio"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
-
+                .product(name: "Queues", package: "queues"),
             ],
             swiftSettings: swiftSettings
         ),
