@@ -18,6 +18,12 @@ func configure(_ app: Application) async throws {
     
     app.queues.configuration.workerCount = 1
     app.queues.add(HelloJob())
+    app.queues.add(
+        ScanPublicInboxArchiveJob()
+    )
+    app.queues.add(
+        IngestPublicInboxEpochJob()
+    )
     
     // register routes
     try routes(app)
