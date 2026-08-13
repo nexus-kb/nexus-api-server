@@ -12,7 +12,15 @@ struct MailingListRecord: Sendable {
     let name: String
     let archiveGroup: String
     let archivePath: String?
-    let lastScannedOID: String?
+    let createdAt: Date
+    let updatedAt: Date
+}
+
+struct MailingListArchiveEpochRecord: Sendable {
+    let id: Int64
+    let mailingListID: Int64
+    let epoch: Int32
+    let lastScannedCommitOID: String?
     let createdAt: Date
     let updatedAt: Date
 }
