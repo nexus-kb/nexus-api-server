@@ -17,9 +17,11 @@ let package = Package(
         .package(url: "https://github.com/vapor/queues.git", from: "1.18.0"),
     ],
     targets: [
+        .target(name: "MailParser"),
         .executableTarget(
             name: "NexusKb",
             dependencies: [
+                .target(name: "MailParser"),
                 .product(name: "Vapor", package: "vapor"),
                 .product(name: "PostgresNIO", package: "postgres-nio"),
                 .product(name: "NIOCore", package: "swift-nio"),
@@ -27,6 +29,12 @@ let package = Package(
                 .product(name: "Queues", package: "queues"),
             ],
             swiftSettings: swiftSettings
+        ),
+        .testTarget(
+            name: "MailParserTests",
+            dependencies: [
+                .target(name: "MailParser"),
+            ],
         ),
         .testTarget(
             name: "NexusKbTests",
