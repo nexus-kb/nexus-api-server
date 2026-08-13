@@ -28,6 +28,9 @@ let package = Package(
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Queues", package: "queues"),
             ],
+            exclude: [
+                "Migrations",
+            ],
             swiftSettings: swiftSettings
         ),
         .testTarget(
