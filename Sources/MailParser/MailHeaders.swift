@@ -61,28 +61,65 @@ enum MessageSyntax {
     ) -> (Data, Data) {
         let bytes = [UInt8](data)
 
-//        [13, 10, 13, 10]  →  \r\n\r\n CRLF separator
-//        [10, 10]          →  \n\n UNIX/LF-only mail
-//        [13, 13]          →  \r\r old/non-standard CR-only mail
+        // A MIME body part may legally contain no part
+        // headers. In that case its header section is
+        // represented by a single leading line ending.
+        if bytes.starts(with: [13, 10]) {
+            return (
+                Data(),
+                Data(bytes.dropFirst(2))
+            )
+        }
+
+        if bytes.first == 10
+            || bytes.first == 13
+        {
+            return (
+                Data(),
+                Data(bytes.dropFirst())
+            )
+        }
+
+        //        [13, 10, 13, 10]  →  \r\n\r\n CRLF separator
+        //        [10, 10]          →  \n\n UNIX/LF-only mail
+        //        [13, 13]          →  \r\r old/non-standard CR-only mail
         let separators: [[UInt8]] = [
             [13, 10, 13, 10],
             [10, 10],
             [13, 13],
         ]
 
+        var selectedIndex: Int?
+        var selectedLength = 0
+
         for separator in separators {
-            if let index = firstIndex(
+            guard let index = firstIndex(
                 of: separator,
                 in: bytes
-            ) {
-                return (
-                    Data(bytes[..<index]),
-                    Data(bytes[(index + separator.count)...])
-                )
+            ) else {
+                continue
+            }
+
+            if selectedIndex.map({
+                index < $0
+            }) ?? true {
+                selectedIndex = index
+                selectedLength = separator.count
             }
         }
 
-        return (data, Data())
+        guard let selectedIndex else {
+            return (data, Data())
+        }
+
+        return (
+            Data(bytes[..<selectedIndex]),
+            Data(
+                bytes[
+                    (selectedIndex + selectedLength)...
+                ]
+            )
+        )
     }
 
 //    Finds first occurance of needle in haystack using a sequential scan

@@ -140,3 +140,69 @@ func ignoresAttachmentsAndHTML() throws {
 
     #expect(message.textBody == "visible")
 }
+
+@Test
+func decodesHeaderlessMultipartTextPart() throws {
+    let raw = Data(
+        """
+        From: Michael Chan <michael.chan@broadcom.com>
+        To: bpf@vger.kernel.org
+        Message-ID: <1648858872-14682-1-git-send-email-michael.chan@broadcom.com>
+        Subject: [PATCH net 0/3] bnxt_en: XDP redirect fixes
+        MIME-Version: 1.0
+        Content-Type: multipart/signed; protocol="application/pkcs7-signature"; boundary="signed-boundary"
+
+        --signed-boundary
+
+        This series includes 3 fixes related to the XDP redirect code path in
+        the driver.
+        --signed-boundary
+        Content-Type: application/pkcs7-signature; name="smime.p7s"
+        Content-Transfer-Encoding: base64
+        Content-Disposition: attachment; filename="smime.p7s"
+
+        c2lnbmF0dXJl
+        --signed-boundary--
+        """.utf8
+    )
+
+    let message = try RFCMessageParser().parse(raw)
+
+    #expect(
+        message.messageID
+            == "1648858872-14682-1-git-send-email-michael.chan@broadcom.com"
+    )
+
+    #expect(
+        message.textBody
+            == """
+            This series includes 3 fixes related to the XDP redirect code path in
+            the driver.
+            """
+    )
+}
+
+@Test
+func usesEarliestHeaderBodySeparator() throws {
+    var source =
+        "From: person@example.com\n"
+
+    source +=
+        "Message-ID: <mixed-line-endings@example.com>\n"
+
+    source +=
+        "Subject: Mixed line endings\n"
+
+    source += "\n"
+    source += "First paragraph.\r\n"
+    source += "\r\n"
+    source += "Second paragraph."
+
+    let raw = Data(source.utf8)
+    let message = try RFCMessageParser().parse(raw)
+
+    #expect(
+        message.textBody
+            == "First paragraph.\r\n\r\nSecond paragraph."
+    )
+}
