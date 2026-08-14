@@ -40,7 +40,7 @@ struct PostgresIngestResult:
 
 struct PostgresIngestService: Sendable {
     let client: PostgresClient
-    
+
     func archiveCursor(
         mailingListID: Int64,
         epoch: Int32,
@@ -64,7 +64,7 @@ struct PostgresIngestService: Sendable {
             )
         }
     }
- 
+
     func ingest(
         commit: PublicInboxCommit,
         parsed: ParsedIngestMessage,
@@ -73,7 +73,8 @@ struct PostgresIngestService: Sendable {
         expectedPreviousCommitOID: String?,
         logger: Logger
     ) async throws -> PostgresIngestResult {
-        try await client.withTransaction(
+        let normalized = PostgresTextNormalizer.normalize(parsed)
+        return try await client.withTransaction(
             logger: logger
         ) { connection in
             try await ensureEpoch(
@@ -92,12 +93,12 @@ struct PostgresIngestService: Sendable {
 
             if currentCursor == commit.commitOID {
                 guard let existing = try await existingMessage(
-                    messageID: parsed.message.messageID,
+                    messageID: normalized.message.messageID,
                     connection: connection,
                     logger: logger
                 ) else {
                     throw PostgresIngestError.missingMessage(
-                        parsed.message.messageID
+                        normalized.message.messageID
                     )
                 }
 
@@ -119,7 +120,7 @@ struct PostgresIngestService: Sendable {
 
             let persisted = try await persistMessage(
                 commit: commit,
-                parsed: parsed,
+                parsed: normalized,
                 mailingListID: mailingListID,
                 connection: connection,
                 logger: logger
@@ -142,7 +143,7 @@ struct PostgresIngestService: Sendable {
             )
         }
     }
-    
+
     private func ensureEpoch(
         mailingListID: Int64,
         epoch: Int32,
@@ -168,7 +169,7 @@ struct PostgresIngestService: Sendable {
             logger: logger
         )
     }
-    
+
     private func persistMessage(
         commit: PublicInboxCommit,
         parsed: ParsedIngestMessage,
@@ -289,7 +290,7 @@ struct PostgresIngestService: Sendable {
             connection: connection,
             logger: logger
         )
-        
+
         try await PostgresPatchIngestService()
             .persist(
                 parsed: parsed,
@@ -313,7 +314,7 @@ struct PostgresIngestService: Sendable {
             targetThreadID
         )
     }
-    
+
     private func ensureThread(
         for messageID: String,
         timestamp: Date,
@@ -396,7 +397,7 @@ struct PostgresIngestService: Sendable {
 
         return resolved.threadID
     }
-    
+
     private func mergeThread(
          _ sourceThreadID: Int64,
          into targetThreadID: Int64,
@@ -460,7 +461,7 @@ struct PostgresIngestService: Sendable {
              logger: logger
          )
      }
-    
+
     private func linkMessageToMailingList(
         messageDatabaseID: Int64,
         mailingListID: Int64,
@@ -491,7 +492,7 @@ struct PostgresIngestService: Sendable {
             logger: logger
         )
     }
-    
+
     private func replaceRecipients(
         messageDatabaseID: Int64,
         parsed: ParsedIngestMessage,
@@ -553,7 +554,7 @@ struct PostgresIngestService: Sendable {
             )
         }
     }
-    
+
     private func ensurePerson(
         name: String?,
         email: String,
@@ -592,7 +593,7 @@ struct PostgresIngestService: Sendable {
 
         return personID
     }
-    
+
     private func updateThreadMetadata(
         threadID: Int64,
         rootCandidateMessageID: String,
@@ -624,7 +625,7 @@ struct PostgresIngestService: Sendable {
             logger: logger
         )
     }
-    
+
     private func existingMessage(
         messageID: String,
         connection: PostgresConnection,
@@ -653,7 +654,7 @@ struct PostgresIngestService: Sendable {
 
         return nil
     }
-    
+
     private func lockedCursor(
         mailingListID: Int64,
         epoch: Int32,
@@ -682,7 +683,7 @@ struct PostgresIngestService: Sendable {
             epoch: epoch
         )
     }
-    
+
     private func advanceCursor(
         mailingListID: Int64,
         epoch: Int32,
@@ -723,7 +724,7 @@ struct PostgresIngestService: Sendable {
             )
         )
     }
-    
+
     private func execute(
         _ query: PostgresQuery,
         on connection: PostgresConnection,
