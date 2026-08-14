@@ -144,12 +144,30 @@ enum MessageSyntax {
         return nil
     }
 
+    private static func normalizedHeaderText(
+        _ data: Data
+    ) -> String {
+        let isolatedCarriageReturnReplacement =
+            data.contains(0x0A) ? " " : "\n"
+
+        return String(
+            decoding: data,
+            as: UTF8.self
+        )
+        .replacingOccurrences(
+            of: "\r\n",
+            with: "\n"
+        )
+        .replacingOccurrences(
+            of: "\r",
+            with: isolatedCarriageReturnReplacement
+        )
+    }
+
     private static func parseHeaders(
         _ data: Data
     ) throws -> MailHeaders {
-        let text = String(decoding: data, as: UTF8.self)
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
+        let text = normalizedHeaderText(data)
 
         var fields: [MailHeader] = []
         var currentName: String?

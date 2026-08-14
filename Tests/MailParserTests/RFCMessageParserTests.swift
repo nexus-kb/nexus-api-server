@@ -206,3 +206,83 @@ func usesEarliestHeaderBodySeparator() throws {
             == "First paragraph.\r\n\r\nSecond paragraph."
     )
 }
+
+@Test
+func toleratesIsolatedCarriageReturnInHeaderValue() throws {
+    var source =
+        "From: person@example.com\n"
+
+    source +=
+        "Message-ID: <isolated-cr@example.com>\n"
+
+    source +=
+        "Content-Type: text/plain; charset="
+
+    var raw = Data(source.utf8)
+    raw.append(0x0D)
+    raw.append(
+        contentsOf:
+            """
+            y
+            Content-Transfer-Encoding: 8bit
+
+            Body
+            """.utf8
+    )
+
+    let message = try RFCMessageParser().parse(raw)
+
+    #expect(
+        message.messageID
+            == "isolated-cr@example.com"
+    )
+
+    #expect(
+        message.headers.firstValue(
+            named: "Content-Type"
+        ) == "text/plain; charset= y"
+    )
+
+    #expect(message.textBody == "Body")
+}
+
+
+@Test
+func rejectsColonlessLFDelimitedHeader() {
+    let raw = Data(
+        """
+        From: person@example.com
+        Message-ID: <malformed@example.com>
+        y
+        Subject: Example
+
+        Body
+        """.utf8
+    )
+
+    #expect(
+        throws: MailParserError
+            .malformedHeader("y")
+    ) {
+        try RFCMessageParser().parse(raw)
+    }
+}
+
+@Test
+func parsesCROnlyMessage() throws {
+    let raw = Data(
+        (
+            "From: person@example.com\r"
+                + "Message-ID: <cr-only@example.com>\r"
+                + "Subject: CR only\r"
+                + "\r"
+                + "Body"
+        ).utf8
+    )
+
+    let message = try RFCMessageParser().parse(raw)
+
+    #expect(message.messageID == "cr-only@example.com")
+    #expect(message.subject == "CR only")
+    #expect(message.textBody == "Body")
+}
