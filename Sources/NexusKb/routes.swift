@@ -91,4 +91,51 @@ func routes(_ app: Application) throws {
 
         return .accepted
     }
+
+    let api = app.grouped(
+        "api",
+        "v1"
+    )
+    let threadController =
+        ThreadController()
+    let messageController =
+        MessageController()
+    let referenceDataController =
+        ReferenceDataController()
+
+    api.get(
+        "threads",
+        use: threadController.index
+    )
+
+    api.get(
+        "threads",
+        ":rootMessageID",
+        "messages",
+        use: threadController.messages
+    )
+
+    api.get(
+        "threads",
+        ":rootMessageID",
+        use: threadController.show
+    )
+
+    api.get(
+        "messages",
+        ":messageID",
+        use: messageController.show
+    )
+
+    api.get(
+        "mailing-lists",
+        use: referenceDataController
+            .mailingLists
+    )
+
+    api.get(
+        "subsystems",
+        use: referenceDataController
+            .subsystems
+    )
 }
