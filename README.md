@@ -1,27 +1,60 @@
-# NexusKb
+# Nexus KB
 
-💧 A project built with the Vapor web framework.
+A Linux kernel development knowledge base built with Swift, Vapor, Postgres,
+and a SolidJS web interface.
 
-## Getting Started
+## Backend
 
-To build the project using the Swift Package Manager, run the following command in the terminal from the root of the project:
 ```bash
 swift build
-```
-
-To run the project and start the server, use the following command:
-```bash
 swift run
-```
-
-To execute tests, use the following command:
-```bash
 swift test
 ```
 
-### See more
+The Vapor application requires the existing Postgres environment variables.
+It serves the production web interface from `Public/` at
+`http://127.0.0.1:8080/`.
 
-- [Vapor Website](https://vapor.codes)
-- [Vapor Documentation](https://docs.vapor.codes)
-- [Vapor GitHub](https://github.com/vapor)
-- [Vapor Community maintained packages](https://github.com/vapor-community)
+## Web interface
+
+Install the frontend dependencies once:
+
+```bash
+cd WebUI
+pnpm install
+```
+
+For frontend development, run Vapor in one terminal and Vite in another:
+
+```bash
+# Terminal 1, from the repository root
+swift run
+
+# Terminal 2
+cd WebUI
+pnpm dev
+```
+
+Vite proxies `/api` requests to Vapor at `http://127.0.0.1:8080`.
+
+Generate the production assets served by Vapor:
+
+```bash
+cd WebUI
+pnpm build
+```
+
+The build replaces `Public/index.html` and `Public/assets/`. These generated
+files are committed so a checkout can serve the web interface without running
+the frontend toolchain.
+
+## Tests
+
+```bash
+swift test
+
+cd WebUI
+pnpm test
+```
+
+The frontend can also be type-checked independently with `pnpm check`.
