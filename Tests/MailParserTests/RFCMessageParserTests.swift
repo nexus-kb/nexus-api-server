@@ -286,3 +286,82 @@ func parsesCROnlyMessage() throws {
     #expect(message.subject == "CR only")
     #expect(message.textBody == "Body")
 }
+
+@Test
+func acceptsEveryHeaderBodySeparator() throws {
+    let cases = [
+        (
+            lineEnding: "\r\n",
+            separator: "\r\n\r\n"
+        ),
+        (
+            lineEnding: "\n",
+            separator: "\n\n"
+        ),
+        (
+            lineEnding: "\r",
+            separator: "\r\r"
+        ),
+    ]
+
+    for testCase in cases {
+        let source =
+            "From: person@example.com"
+            + testCase.lineEnding
+            + "Message-ID: <separator@example.com>"
+            + testCase.lineEnding
+            + "Subject: Separator"
+            + testCase.separator
+            + "Body"
+
+        let message = try RFCMessageParser().parse(
+            Data(source.utf8)
+        )
+
+        #expect(
+            message.messageID
+                == "separator@example.com"
+        )
+
+        #expect(message.textBody == "Body")
+    }
+}
+
+@Test
+func parsesSupportedDatesWithOneParser() throws {
+    let dateValues = [
+        "Wed, 12 Aug 2026 10:30:00 -0400",
+        "Wed, 12 Aug 2026 10:30 -0400",
+        "12 Aug 2026 10:30:00 -0400",
+        "12 Aug 2026 10:30 -0400",
+        "Wed, 12 Aug 26 10:30:00 -0400",
+        "12 Aug 26 10:30:00 -0400",
+        "Wed, 12 Aug 2026 10:30:00 EDT",
+        "12 Aug 2026 10:30:00 EDT",
+    ]
+
+    let expected = Date(
+        timeIntervalSince1970: 1_786_545_000
+    )
+
+    let parser = RFCMessageParser()
+
+    for (index, dateValue) in dateValues.enumerated() {
+        let raw = Data(
+            """
+            From: person@example.com
+            Date: \(dateValue)
+            Received: from example.com; \(dateValue)
+            Message-ID: <date-\(index)@example.com>
+            Subject: Date
+
+            Body
+            """.utf8
+        )
+
+        let message = try parser.parse(raw)
+
+        #expect(message.date == expected)
+        #expect(message.receivedDate == expected)
+    }
+}

@@ -59,89 +59,85 @@ enum MessageSyntax {
     private static func splitHeaderAndBody(
         _ data: Data
     ) -> (Data, Data) {
-        let bytes = [UInt8](data)
+        let separator: (offset: Int, length: Int)? =
+            data.withUnsafeBytes { rawBuffer in
+                let bytes = rawBuffer.bindMemory(
+                    to: UInt8.self
+                )
 
-        // A MIME body part may legally contain no part
-        // headers. In that case its header section is
-        // represented by a single leading line ending.
-        if bytes.starts(with: [13, 10]) {
-            return (
-                Data(),
-                Data(bytes.dropFirst(2))
-            )
-        }
+                // A MIME body part may legally contain no
+                // part headers. Its header section is then
+                // represented by one leading line ending.
+                if bytes.count >= 2,
+                    bytes[0] == 0x0D,
+                    bytes[1] == 0x0A
+                {
+                    return (0, 2)
+                }
 
-        if bytes.first == 10
-            || bytes.first == 13
-        {
-            return (
-                Data(),
-                Data(bytes.dropFirst())
-            )
-        }
+                if bytes.first == 0x0A
+                    || bytes.first == 0x0D
+                {
+                    return (0, 1)
+                }
 
-        //        [13, 10, 13, 10]  →  \r\n\r\n CRLF separator
-        //        [10, 10]          →  \n\n UNIX/LF-only mail
-        //        [13, 13]          →  \r\r old/non-standard CR-only mail
-        let separators: [[UInt8]] = [
-            [13, 10, 13, 10],
-            [10, 10],
-            [13, 13],
-        ]
+                guard bytes.count >= 2 else {
+                    return nil
+                }
 
-        var selectedIndex: Int?
-        var selectedLength = 0
+                var offset = 0
 
-        for separator in separators {
-            guard let index = firstIndex(
-                of: separator,
-                in: bytes
-            ) else {
-                continue
+                while offset < bytes.count - 1 {
+                    switch bytes[offset] {
+                    case 0x0A:
+                        // \n\n
+                        if bytes[offset + 1] == 0x0A {
+                            return (offset, 2)
+                        }
+
+                    case 0x0D:
+                        // \r\r
+                        if bytes[offset + 1] == 0x0D {
+                            return (offset, 2)
+                        }
+
+                        // \r\n\r\n
+                        if offset + 3 < bytes.count,
+                            bytes[offset + 1] == 0x0A,
+                            bytes[offset + 2] == 0x0D,
+                            bytes[offset + 3] == 0x0A
+                        {
+                            return (offset, 4)
+                        }
+
+                    default:
+                        break
+                    }
+
+                    offset += 1
+                }
+
+                return nil
             }
 
-            if selectedIndex.map({
-                index < $0
-            }) ?? true {
-                selectedIndex = index
-                selectedLength = separator.count
-            }
-        }
-
-        guard let selectedIndex else {
+        guard let separator else {
             return (data, Data())
         }
 
-        return (
-            Data(bytes[..<selectedIndex]),
-            Data(
-                bytes[
-                    (selectedIndex + selectedLength)...
-                ]
-            )
+        let separatorStart = data.index(
+            data.startIndex,
+            offsetBy: separator.offset
         )
-    }
 
-//    Finds first occurance of needle in haystack using a sequential scan
-    private static func firstIndex(
-        of needle: [UInt8],
-        in haystack: [UInt8]
-    ) -> Int? {
-        guard haystack.count >= needle.count else {
-            return nil
-        }
+        let bodyStart = data.index(
+            separatorStart,
+            offsetBy: separator.length
+        )
 
-        for index in 0...(haystack.count - needle.count) {
-            let candidate = haystack[
-                index..<(index + needle.count)
-            ]
-
-            if candidate.elementsEqual(needle) {
-                return index
-            }
-        }
-
-        return nil
+        return (
+            data[..<separatorStart],
+            data[bodyStart...]
+        )
     }
 
     private static func normalizedHeaderText(

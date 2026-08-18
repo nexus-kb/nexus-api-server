@@ -8,7 +8,11 @@
 import Foundation
 
 public struct RFCMessageParser: Sendable {
-    public init() {}
+    private let dateParser: MailDateParser
+
+    public init() {
+        dateParser = MailDateParser()
+    }
 
     public func parse(
         _ data: Data
@@ -46,13 +50,11 @@ public struct RFCMessageParser: Sendable {
                 .flatMap(MailboxParser.parseList),
             cc: entity.headers.values(named: "Cc")
                 .flatMap(MailboxParser.parseList),
-            date: MailDateParser.parse(
+            date: dateParser.parse(
                 entity.headers.firstValue(named: "Date")
             ),
-            receivedDate: MailDateParser.parseReceived(
-                entity.headers.firstValue(
-                    named: "Received"
-                )
+            receivedDate: dateParser.parseReceived(
+                entity.headers.firstValue(named: "Received")
             ),
             inReplyTo: entity.headers
                 .firstValue(named: "In-Reply-To")
@@ -115,33 +117,24 @@ enum MessageIDParser {
     }
 }
 
-enum MailDateParser {
+struct MailDateParser: Sendable {
     private static let formats = [
+        "EEE, d MMM yy HH:mm:ss Z",
+        "d MMM yy HH:mm:ss Z",
         "EEE, d MMM yyyy HH:mm:ss Z",
         "EEE, d MMM yyyy HH:mm Z",
         "d MMM yyyy HH:mm:ss Z",
         "d MMM yyyy HH:mm Z",
-        "EEE, d MMM yy HH:mm:ss Z",
-        "d MMM yy HH:mm:ss Z",
         "EEE, d MMM yyyy HH:mm:ss z",
         "d MMM yyyy HH:mm:ss z",
     ]
 
-    static func parse(
-        _ rawValue: String?
-    ) -> Date? {
-        guard let rawValue else {
-            return nil
-        }
+    private let formatters: [DateFormatter]
 
-        let value = removingComments(
-            from: rawValue
-        ).trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-
-        for format in formats {
+    init() {
+        formatters = Self.formats.map { format in
             let formatter = DateFormatter()
+
             formatter.locale = Locale(
                 identifier: "en_US_POSIX"
             )
@@ -154,7 +147,27 @@ enum MailDateParser {
             formatter.dateFormat = format
             formatter.isLenient = true
 
-            if let date = formatter.date(from: value) {
+            return formatter
+        }
+    }
+
+    func parse(
+        _ rawValue: String?
+    ) -> Date? {
+        guard let rawValue else {
+            return nil
+        }
+
+        let value = Self.removingComments(
+            from: rawValue
+        ).trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+
+        for formatter in formatters {
+            if let date = formatter.date(
+                from: value
+            ) {
                 return date
             }
         }
@@ -162,11 +175,13 @@ enum MailDateParser {
         return nil
     }
 
-    static func parseReceived(
+    func parseReceived(
         _ rawValue: String?
     ) -> Date? {
         guard let rawValue,
-              let semicolon = rawValue.lastIndex(of: ";")
+            let semicolon = rawValue.lastIndex(
+                of: ";"
+            )
         else {
             return nil
         }
@@ -174,7 +189,9 @@ enum MailDateParser {
         return parse(
             String(
                 rawValue[
-                    rawValue.index(after: semicolon)...
+                    rawValue.index(
+                        after: semicolon
+                    )...
                 ]
             )
         )
@@ -211,7 +228,9 @@ enum MailDateParser {
                 continue
             }
 
-            if character == ")", commentDepth > 0 {
+            if character == ")",
+                commentDepth > 0
+            {
                 commentDepth -= 1
                 continue
             }
