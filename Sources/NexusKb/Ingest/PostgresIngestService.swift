@@ -51,9 +51,48 @@ struct PostgresIngestService: Sendable {
     private struct NormalizedPublicInboxMessage:
         Sendable
     {
-        let commitOID: String
         let blobOID: String
         let parsed: ParsedIngestMessage
+    }
+
+    private struct MessageState: Sendable {
+        let id: Int64
+        var threadID: Int64
+    }
+
+    private struct BatchPersistenceState:
+        Sendable
+    {
+        var messagesByMessageID: [String: MessageState] = [:]
+
+        var recipientsByMessageDatabaseID: [Int64: [ResolvedBatchRecipient]] = [:]
+
+        mutating func remapThread(
+            from sourceThreadID: Int64,
+            to targetThreadID: Int64
+        ) {
+            for messageID in Array(
+                messagesByMessageID.keys
+            ) {
+                guard
+                    var state =
+                        messagesByMessageID[
+                            messageID
+                        ],
+                    state.threadID
+                        == sourceThreadID
+                else {
+                    continue
+                }
+
+                state.threadID =
+                    targetThreadID
+
+                messagesByMessageID[
+                    messageID
+                ] = state
+            }
+        }
     }
 
     let client: PostgresClient
@@ -82,86 +121,6 @@ struct PostgresIngestService: Sendable {
         }
     }
 
-    func ingest(
-        commit: PublicInboxCommit,
-        parsed: ParsedIngestMessage,
-        mailingListID: Int64,
-        epoch: Int32,
-        expectedPreviousCommitOID: String?,
-        logger: Logger
-    ) async throws -> PostgresIngestResult {
-        let normalized = PostgresTextNormalizer.normalize(parsed)
-        return try await client.withTransaction(
-            logger: logger
-        ) { connection in
-            try await ensureEpoch(
-                mailingListID: mailingListID,
-                epoch: epoch,
-                connection: connection,
-                logger: logger
-            )
-
-            let currentCursor = try await lockedCursor(
-                mailingListID: mailingListID,
-                epoch: epoch,
-                connection: connection,
-                logger: logger
-            )
-
-            if currentCursor == commit.commitOID {
-                guard let existing = try await existingMessage(
-                    messageID: normalized.message.messageID,
-                    connection: connection,
-                    logger: logger
-                ) else {
-                    throw PostgresIngestError.missingMessage(
-                        normalized.message.messageID
-                    )
-                }
-
-                return PostgresIngestResult(
-                    messageID: existing.id,
-                    threadID: existing.threadID,
-                    wasAlreadyIngested: true
-                )
-            }
-
-            guard currentCursor
-                    == expectedPreviousCommitOID
-            else {
-                throw PostgresIngestError.cursorMismatch(
-                    expected: expectedPreviousCommitOID,
-                    actual: currentCursor
-                )
-            }
-
-            let persisted = try await persistMessage(
-                commitOID: commit.commitOID,
-                blobOID: commit.blobOID,
-                parsed: normalized,
-                mailingListID: mailingListID,
-                connection: connection,
-                logger: logger
-            )
-
-            try await advanceCursor(
-                mailingListID: mailingListID,
-                epoch: epoch,
-                expectedPreviousCommitOID:
-                    expectedPreviousCommitOID,
-                commitOID: commit.commitOID,
-                connection: connection,
-                logger: logger
-            )
-
-            return PostgresIngestResult(
-                messageID: persisted.id,
-                threadID: persisted.threadID,
-                wasAlreadyIngested: false
-            )
-        }
-    }
-
     func ingestBatch(
         _ messages:
             [PreparedPublicInboxMessage],
@@ -177,7 +136,6 @@ struct PostgresIngestService: Sendable {
 
         let normalized = messages.map {
             NormalizedPublicInboxMessage(
-                commitOID: $0.commitOID,
                 blobOID: $0.blobOID,
                 parsed:
                     PostgresTextNormalizer
@@ -213,29 +171,56 @@ struct PostgresIngestService: Sendable {
                     .cursorMismatch(
                         expected:
                             expectedPreviousCommitOID,
-                        actual:
-                            currentCursor
+                        actual: currentCursor
                     )
             }
+
+            let recipientService =
+                PostgresRecipientBatchService()
+
+            let resolvedRecipients =
+                try await recipientService
+                .resolvePeople(
+                    messages:
+                        normalized.map(\.parsed),
+                    connection: connection,
+                    logger: logger
+                )
+
+            var batchState =
+                BatchPersistenceState()
 
             var results: [PostgresIngestResult] = []
             results.reserveCapacity(
                 normalized.count
             )
 
-            for message in normalized {
+            for (
+                messageIndex,
+                message
+            ) in normalized.enumerated() {
                 let persisted =
                     try await persistMessage(
-                        commitOID:
-                            message.commitOID,
                         blobOID:
                             message.blobOID,
                         parsed:
                             message.parsed,
                         mailingListID:
                             mailingListID,
+                        batchState:
+                            &batchState,
                         connection: connection,
                         logger: logger
+                    )
+
+                batchState
+                    .recipientsByMessageDatabaseID[
+                        persisted.id
+                    ] =
+                    resolvedRecipients
+                    .recipients(
+                        forMessageAt:
+                            messageIndex
                     )
 
                 results.append(
@@ -248,6 +233,15 @@ struct PostgresIngestService: Sendable {
                     )
                 )
             }
+
+            try await recipientService
+                .replaceRecipients(
+                    recipientsByMessageID:
+                        batchState
+                        .recipientsByMessageDatabaseID,
+                    connection: connection,
+                    logger: logger
+                )
 
             try await advanceCursor(
                 mailingListID: mailingListID,
@@ -291,10 +285,11 @@ struct PostgresIngestService: Sendable {
     }
 
     private func persistMessage(
-        commitOID: String,
         blobOID: String,
         parsed: ParsedIngestMessage,
         mailingListID: Int64,
+        batchState:
+            inout BatchPersistenceState,
         connection: PostgresConnection,
         logger: Logger
     ) async throws -> (
@@ -311,26 +306,14 @@ struct PostgresIngestService: Sendable {
             message.date
             ?? Date(timeIntervalSince1970: 0)
 
-        let targetThreadID = try await ensureThread(
-            for: threadAnchorMessageID,
-            timestamp: timestamp,
-            connection: connection,
-            logger: logger
-        )
-
-        if let existing = try await existingMessage(
-            messageID: message.messageID,
-            connection: connection,
-            logger: logger
-        ),
-        existing.threadID != targetThreadID {
-            try await mergeThread(
-                existing.threadID,
-                into: targetThreadID,
+        let targetThreadID =
+            try await ensureThread(
+                for: threadAnchorMessageID,
+                timestamp: timestamp,
+                batchState: &batchState,
                 connection: connection,
                 logger: logger
             )
-        }
 
         let rows = try await connection.query(
             """
@@ -384,30 +367,54 @@ struct PostgresIngestService: Sendable {
                     EXCLUDED.cc_recipients,
                 is_placeholder = false,
                 updated_at = now()
-            RETURNING id
+            RETURNING
+                new.id,
+                old.thread_id
             """,
             logger: logger
         )
 
-        guard let messageDatabaseID =
-                try await firstInt64(rows)
+        guard
+            let upserted =
+                try await firstMessageUpsert(rows)
         else {
-            throw PostgresIngestError.missingMessage(
-                message.messageID
+            throw
+                PostgresIngestError
+                .missingMessage(
+                    message.messageID
+                )
+        }
+
+        let messageDatabaseID = upserted.0
+        let previousThreadID = upserted.1
+
+        if let previousThreadID,
+            previousThreadID != targetThreadID
+        {
+            try await mergeThread(
+                previousThreadID,
+                into: targetThreadID,
+                connection: connection,
+                logger: logger
+            )
+
+            batchState.remapThread(
+                from: previousThreadID,
+                to: targetThreadID
             )
         }
+
+        batchState.messagesByMessageID[
+            message.messageID
+        ] = MessageState(
+            id: messageDatabaseID,
+            threadID: targetThreadID
+        )
 
         try await linkMessageToMailingList(
             messageDatabaseID: messageDatabaseID,
             mailingListID: mailingListID,
             blobOID: blobOID,
-            connection: connection,
-            logger: logger
-        )
-
-        try await replaceRecipients(
-            messageDatabaseID: messageDatabaseID,
-            parsed: parsed,
             connection: connection,
             logger: logger
         )
@@ -423,7 +430,8 @@ struct PostgresIngestService: Sendable {
 
         try await updateThreadMetadata(
             threadID: targetThreadID,
-            rootCandidateMessageID: message.messageID,
+            rootCandidateMessageID:
+                message.messageID,
             subject: message.subject,
             timestamp: timestamp,
             connection: connection,
@@ -439,14 +447,31 @@ struct PostgresIngestService: Sendable {
     private func ensureThread(
         for messageID: String,
         timestamp: Date,
+        batchState:
+            inout BatchPersistenceState,
         connection: PostgresConnection,
         logger: Logger
     ) async throws -> Int64 {
-        if let existing = try await existingMessage(
-            messageID: messageID,
-            connection: connection,
-            logger: logger
-        ) {
+        if let cached =
+            batchState
+            .messagesByMessageID[
+                messageID
+            ]
+        {
+            return cached.threadID
+        }
+
+        if let existing =
+            try await existingMessage(
+                messageID: messageID,
+                connection: connection,
+                logger: logger
+            )
+        {
+            batchState.messagesByMessageID[
+                messageID
+            ] = existing
+
             return existing.threadID
         }
 
@@ -477,46 +502,70 @@ struct PostgresIngestService: Sendable {
         guard let threadID =
                 try await firstInt64(threadRows)
         else {
-            throw PostgresIngestError.missingThread(
-                messageID
-            )
+            throw
+                PostgresIngestError
+                .missingThread(messageID)
         }
 
-        try await execute(
-            """
-            INSERT INTO messages (
-                message_id,
-                thread_id,
-                subject,
-                sent_at,
-                is_placeholder
+        let placeholderRows =
+            try await connection.query(
+                """
+                INSERT INTO messages (
+                    message_id,
+                    thread_id,
+                    subject,
+                    sent_at,
+                    is_placeholder
+                )
+                VALUES (
+                    \(messageID),
+                    \(threadID),
+                    '(placeholder)',
+                    \(timestamp),
+                    true
+                )
+                ON CONFLICT (
+                    message_id
+                ) DO NOTHING
+                RETURNING
+                    id,
+                    thread_id
+                """,
+                logger: logger
             )
-            VALUES (
-                \(messageID),
-                \(threadID),
-                '(placeholder)',
-                \(timestamp),
-                true
-            )
-            ON CONFLICT (
-                message_id
-            ) DO NOTHING
-            """,
-            on: connection,
-            logger: logger
-        )
 
-        guard let resolved = try await existingMessage(
-            messageID: messageID,
-            connection: connection,
-            logger: logger
-        ) else {
-            throw PostgresIngestError.missingMessage(
-                messageID
+        if let inserted =
+            try await firstMessageState(
+                placeholderRows
             )
+        {
+            batchState.messagesByMessageID[
+                messageID
+            ] = inserted
+
+            return inserted.threadID
         }
 
-        return resolved.threadID
+        // Another transaction may have inserted
+        // this Message-ID after the first lookup.
+        guard
+            let concurrentlyInserted =
+                try await existingMessage(
+                    messageID: messageID,
+                    connection: connection,
+                    logger: logger
+                )
+        else {
+            throw
+                PostgresIngestError
+                .missingMessage(messageID)
+        }
+
+        batchState.messagesByMessageID[
+            messageID
+        ] = concurrentlyInserted
+
+        return concurrentlyInserted.threadID
     }
 
     private func mergeThread(
@@ -614,107 +663,6 @@ struct PostgresIngestService: Sendable {
         )
     }
 
-    private func replaceRecipients(
-        messageDatabaseID: Int64,
-        parsed: ParsedIngestMessage,
-        connection: PostgresConnection,
-        logger: Logger
-    ) async throws {
-        try await execute(
-            """
-            DELETE FROM messages_recipients
-            WHERE message_id = \(messageDatabaseID)
-            """,
-            on: connection,
-            logger: logger
-        )
-
-        let recipients = parsed.message.to.map {
-            ($0, RecipientType.to)
-        } + parsed.message.cc.map {
-            ($0, RecipientType.cc)
-        }
-
-        var seen = Set<String>()
-
-        for (
-            mailbox,
-            recipientType
-        ) in recipients {
-            let key =
-                "\(recipientType.rawValue):"
-                + mailbox.address.lowercased()
-
-            guard seen.insert(key).inserted else {
-                continue
-            }
-
-            let personID = try await ensurePerson(
-                name: mailbox.name,
-                email: mailbox.address,
-                connection: connection,
-                logger: logger
-            )
-
-            try await execute(
-                """
-                INSERT INTO messages_recipients (
-                    message_id,
-                    person_id,
-                    recipient_type
-                )
-                VALUES (
-                    \(messageDatabaseID),
-                    \(personID),
-                    \(recipientType.rawValue)
-                )
-                ON CONFLICT DO NOTHING
-                """,
-                on: connection,
-                logger: logger
-            )
-        }
-    }
-
-    private func ensurePerson(
-        name: String?,
-        email: String,
-        connection: PostgresConnection,
-        logger: Logger
-    ) async throws -> Int64 {
-        let rows = try await connection.query(
-            """
-            INSERT INTO people (
-                name,
-                email
-            )
-            VALUES (
-                \(name),
-                \(email)
-            )
-            ON CONFLICT (
-                lower(email)
-            ) DO UPDATE
-            SET name = COALESCE(
-                EXCLUDED.name,
-                people.name
-            )
-            RETURNING id
-            """,
-            logger: logger
-        )
-
-        guard let personID =
-                try await firstInt64(rows)
-        else {
-            throw PostgresIngestError.missingMessage(
-                email
-            )
-        }
-
-        return personID
-    }
-
     private func updateThreadMetadata(
         threadID: Int64,
         rootCandidateMessageID: String,
@@ -751,10 +699,7 @@ struct PostgresIngestService: Sendable {
         messageID: String,
         connection: PostgresConnection,
         logger: Logger
-    ) async throws -> (
-        id: Int64,
-        threadID: Int64
-    )? {
+    ) async throws -> MessageState? {
         let rows = try await connection.query(
             """
             SELECT
@@ -767,13 +712,9 @@ struct PostgresIngestService: Sendable {
             logger: logger
         )
 
-        for try await row in rows {
-            return try row.decode(
-                (Int64, Int64).self
-            )
-        }
-
-        return nil
+        return try await firstMessageState(
+            rows
+        )
     }
 
     private func lockedCursor(
@@ -857,6 +798,38 @@ struct PostgresIngestService: Sendable {
         )
 
         for try await _ in rows {}
+    }
+
+    private func firstMessageState(
+        _ rows: PostgresRowSequence
+    ) async throws -> MessageState? {
+        for try await row in rows {
+            let value = try row.decode(
+                (Int64, Int64).self
+            )
+
+            return MessageState(
+                id: value.0,
+                threadID: value.1
+            )
+        }
+
+        return nil
+    }
+
+    private func firstMessageUpsert(
+        _ rows: PostgresRowSequence
+    ) async throws -> (
+        Int64,
+        Int64?
+    )? {
+        for try await row in rows {
+            return try row.decode(
+                (Int64, Int64?).self
+            )
+        }
+
+        return nil
     }
 
     private func firstInt64(

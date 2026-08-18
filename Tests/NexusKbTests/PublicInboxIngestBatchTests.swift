@@ -4,6 +4,7 @@ import PostgresNIO
 import Testing
 import Vapor
 import VaporTesting
+import MailParser
 
 @Suite(
     "Public-inbox database batch tests",
@@ -193,6 +194,22 @@ struct PublicInboxIngestBatchTests {
     }
 }
 
+private struct TestPerson {
+    let id: Int64
+    let name: String?
+    let email: String
+}
+
+private struct TestRecipient {
+    let email: String
+    let type: String
+}
+
+private struct TestMessageState {
+    let threadID: Int64
+    let isPlaceholder: Bool
+}
+
 private final class DatabaseFixture {
     let app: Application
     let prefix: String
@@ -229,21 +246,52 @@ private final class DatabaseFixture {
 
     func message(
         number: Int,
+        messageID: String? = nil,
+        inReplyTo: String? = nil,
+        to: [String] = [],
+        cc: [String] = [],
         invalidPatchIndex: Bool = false
     ) throws -> PreparedPublicInboxMessage {
-        let messageID = "\(prefix)-\(number)@example.com"
-        let parsed = try IngestMessageParser().parse(
-            Data(
-                """
-                From: Batch Test <batch-test@example.com>
-                Message-ID: <\(messageID)>
-                Subject: Batch transaction test \(number)
-                Date: Tue, 18 Aug 2026 12:00:00 -0400
+        let resolvedMessageID =
+            messageID
+            ?? "\(prefix)-\(number)@example.com"
 
-                Test body \(number)
-                """.utf8
+        var headerLines = [
+            "From: Batch Test <batch-test@example.com>",
+            "Message-ID: <\(resolvedMessageID)>",
+            "Subject: Batch transaction test \(number)",
+            "Date: Tue, 18 Aug 2026 12:00:00 -0400",
+        ]
+
+        if let inReplyTo {
+            headerLines.append(
+                "In-Reply-To: <\(inReplyTo)>"
             )
-        )
+        }
+
+        if !to.isEmpty {
+            headerLines.append(
+                "To: \(to.joined(separator: ", "))"
+            )
+        }
+
+        if !cc.isEmpty {
+            headerLines.append(
+                "Cc: \(cc.joined(separator: ", "))"
+            )
+        }
+
+        let rawMessage =
+            headerLines.joined(
+                separator: "\r\n"
+            )
+            + "\r\n\r\n"
+            + "Test body \(number)\r\n"
+
+        let parsed = try IngestMessageParser()
+            .parse(
+                Data(rawMessage.utf8)
+            )
 
         let effectiveParsed: ParsedIngestMessage
 
@@ -265,9 +313,15 @@ private final class DatabaseFixture {
 
         return PreparedPublicInboxMessage(
             commitOID:
-                String(format: "%040x", number),
+                String(
+                    format: "%040x",
+                    number
+                ),
             blobOID:
-                String(format: "%040x", number + 10_000),
+                String(
+                    format: "%040x",
+                    number + 10_000
+                ),
             parsed: effectiveParsed
         )
     }
@@ -321,6 +375,13 @@ private final class DatabaseFixture {
             WHERE root_message_id LIKE \(prefix + "%")
             """
         )
+        try await execute(
+            """
+            DELETE FROM people
+            WHERE lower(email) LIKE
+                lower(\(prefix + "%"))
+            """
+        )
     }
 
     private func execute(
@@ -332,5 +393,551 @@ private final class DatabaseFixture {
         )
 
         for try await _ in rows {}
+    }
+
+    func people(
+        email: String
+    ) async throws -> [TestPerson] {
+        let rows = try await app.postgres.query(
+            """
+            SELECT
+                id,
+                name,
+                email
+            FROM people
+            WHERE lower(email) =
+                lower(\(email))
+            ORDER BY id
+            """,
+            logger: app.logger
+        )
+
+        var people: [TestPerson] = []
+
+        for try await row in rows {
+            let value = try row.decode(
+                (
+                    Int64,
+                    String?,
+                    String
+                ).self
+            )
+
+            people.append(
+                TestPerson(
+                    id: value.0,
+                    name: value.1,
+                    email: value.2
+                )
+            )
+        }
+
+        return people
+    }
+
+    func recipients(
+        messageID: String
+    ) async throws -> [TestRecipient] {
+        let rows = try await app.postgres.query(
+            """
+            SELECT
+                lower(person.email),
+                recipient.recipient_type
+            FROM messages_recipients
+                AS recipient
+            JOIN messages AS message
+              ON message.id =
+                    recipient.message_id
+            JOIN people AS person
+              ON person.id =
+                    recipient.person_id
+            WHERE message.message_id =
+                \(messageID)
+            ORDER BY
+                lower(person.email),
+                recipient.recipient_type
+            """,
+            logger: app.logger
+        )
+
+        var recipients: [TestRecipient] = []
+
+        for try await row in rows {
+            let value = try row.decode(
+                (String, String).self
+            )
+
+            recipients.append(
+                TestRecipient(
+                    email: value.0,
+                    type: value.1
+                )
+            )
+        }
+
+        return recipients
+    }
+
+    func messageState(
+        messageID: String
+    ) async throws -> TestMessageState? {
+        let rows = try await app.postgres.query(
+            """
+            SELECT
+                thread_id,
+                is_placeholder
+            FROM messages
+            WHERE message_id = \(messageID)
+            """,
+            logger: app.logger
+        )
+
+        for try await row in rows {
+            let value = try row.decode(
+                (Int64, Bool).self
+            )
+
+            return TestMessageState(
+                threadID: value.0,
+                isPlaceholder: value.1
+            )
+        }
+
+        return nil
+    }
+
+    func threadCount() async throws -> Int64 {
+        let rows = try await app.postgres.query(
+            """
+            SELECT count(*)::bigint
+            FROM threads
+            WHERE root_message_id LIKE
+                \(prefix + "%")
+            """,
+            logger: app.logger
+        )
+
+        for try await row in rows {
+            return try row.decode(
+                Int64.self
+            )
+        }
+
+        return 0
+    }
+}
+
+@Test(
+    "Batch resolves each person once and preserves typed links"
+)
+func batchesPeopleAndRecipients() async throws {
+    try await withApp(
+        configure: configure
+    ) { app in
+        let fixture = try await DatabaseFixture(
+            app: app
+        )
+
+        do {
+            let sharedEmail =
+                "\(fixture.prefix)-shared@example.com"
+
+            let first = try fixture.message(
+                number: 1,
+                to: [
+                    "First Name <\(sharedEmail)>",
+                    "Duplicate Name <\(sharedEmail.uppercased())>",
+                ],
+                cc: [
+                    "Cc Name <\(sharedEmail)>"
+                ]
+            )
+
+            let second = try fixture.message(
+                number: 2,
+                to: [
+                    "Final Name <\(sharedEmail.uppercased())>"
+                ]
+            )
+
+            _ = try await PostgresIngestService(
+                client: app.postgres
+            ).ingestBatch(
+                [first, second],
+                mailingListID:
+                    fixture.mailingListID,
+                epoch: fixture.epoch,
+                expectedPreviousCommitOID: nil,
+                logger: app.logger
+            )
+
+            let people = try await fixture.people(
+                email: sharedEmail
+            )
+
+            #expect(people.count == 1)
+            #expect(
+                people.first?.name
+                    == "Final Name"
+            )
+            #expect(
+                people.first?.email
+                    == sharedEmail
+            )
+
+            let firstRecipients =
+                try await fixture.recipients(
+                    messageID:
+                        first.parsed.message
+                        .messageID
+                )
+
+            #expect(
+                firstRecipients.count == 2
+            )
+            #expect(
+                firstRecipients.contains {
+                    $0.type
+                        == RecipientType
+                        .to
+                        .rawValue
+                }
+            )
+            #expect(
+                firstRecipients.contains {
+                    $0.type
+                        == RecipientType
+                        .cc
+                        .rawValue
+                }
+            )
+
+            let secondRecipients =
+                try await fixture.recipients(
+                    messageID:
+                        second.parsed.message
+                        .messageID
+                )
+
+            #expect(
+                secondRecipients.count == 1
+            )
+            #expect(
+                secondRecipients.first?.type
+                    == RecipientType
+                    .to
+                    .rawValue
+            )
+        } catch {
+            try? await fixture.remove()
+            throw error
+        }
+
+        try await fixture.remove()
+    }
+}
+
+@Test(
+    "Last occurrence of a Message-ID supplies final recipients"
+)
+func lastMessageOccurrenceWins() async throws {
+    try await withApp(
+        configure: configure
+    ) { app in
+        let fixture = try await DatabaseFixture(
+            app: app
+        )
+
+        do {
+            let messageID =
+                "\(fixture.prefix)-duplicate@example.com"
+
+            let oldEmail =
+                "\(fixture.prefix)-old@example.com"
+
+            let newEmail =
+                "\(fixture.prefix)-new@example.com"
+
+            let first = try fixture.message(
+                number: 1,
+                messageID: messageID,
+                to: [
+                    "Old Recipient <\(oldEmail)>"
+                ]
+            )
+
+            let second = try fixture.message(
+                number: 2,
+                messageID: messageID,
+                cc: [
+                    "New Recipient <\(newEmail)>"
+                ]
+            )
+
+            _ = try await PostgresIngestService(
+                client: app.postgres
+            ).ingestBatch(
+                [first, second],
+                mailingListID:
+                    fixture.mailingListID,
+                epoch: fixture.epoch,
+                expectedPreviousCommitOID: nil,
+                logger: app.logger
+            )
+
+            let recipients =
+                try await fixture.recipients(
+                    messageID: messageID
+                )
+
+            #expect(recipients.count == 1)
+            #expect(
+                recipients.first?.email
+                    == newEmail.lowercased()
+            )
+            #expect(
+                recipients.first?.type
+                    == RecipientType
+                    .cc
+                    .rawValue
+            )
+        } catch {
+            try? await fixture.remove()
+            throw error
+        }
+
+        try await fixture.remove()
+    }
+}
+
+@Test(
+    "Last empty recipient set removes previous links"
+)
+func emptyRecipientSetRemovesLinks() async throws {
+    try await withApp(
+        configure: configure
+    ) { app in
+        let fixture = try await DatabaseFixture(
+            app: app
+        )
+
+        do {
+            let messageID =
+                "\(fixture.prefix)-empty@example.com"
+
+            let recipientEmail =
+                "\(fixture.prefix)-removed@example.com"
+
+            let first = try fixture.message(
+                number: 1,
+                messageID: messageID,
+                to: [
+                    "Removed <\(recipientEmail)>"
+                ]
+            )
+
+            let second = try fixture.message(
+                number: 2,
+                messageID: messageID
+            )
+
+            _ = try await PostgresIngestService(
+                client: app.postgres
+            ).ingestBatch(
+                [first, second],
+                mailingListID:
+                    fixture.mailingListID,
+                epoch: fixture.epoch,
+                expectedPreviousCommitOID: nil,
+                logger: app.logger
+            )
+
+            #expect(
+                try await fixture.recipients(
+                    messageID: messageID
+                ).isEmpty
+            )
+        } catch {
+            try? await fixture.remove()
+            throw error
+        }
+
+        try await fixture.remove()
+    }
+}
+
+@Test(
+    "Reply before parent replaces placeholder in one thread"
+)
+func resolvesPlaceholderInBatch() async throws {
+    try await withApp(
+        configure: configure
+    ) { app in
+        let fixture = try await DatabaseFixture(
+            app: app
+        )
+
+        do {
+            let rootMessageID =
+                "\(fixture.prefix)-root@example.com"
+
+            let replyMessageID =
+                "\(fixture.prefix)-reply@example.com"
+
+            let reply = try fixture.message(
+                number: 1,
+                messageID: replyMessageID,
+                inReplyTo: rootMessageID
+            )
+
+            let root = try fixture.message(
+                number: 2,
+                messageID: rootMessageID
+            )
+
+            _ = try await PostgresIngestService(
+                client: app.postgres
+            ).ingestBatch(
+                [reply, root],
+                mailingListID:
+                    fixture.mailingListID,
+                epoch: fixture.epoch,
+                expectedPreviousCommitOID: nil,
+                logger: app.logger
+            )
+
+            let rootState =
+                try #require(
+                    try await fixture.messageState(
+                        messageID:
+                            rootMessageID
+                    )
+                )
+
+            let replyState =
+                try #require(
+                    try await fixture.messageState(
+                        messageID:
+                            replyMessageID
+                    )
+                )
+
+            #expect(
+                rootState.threadID
+                    == replyState.threadID
+            )
+            #expect(!rootState.isPlaceholder)
+            #expect(
+                try await fixture.threadCount()
+                    == 1
+            )
+        } catch {
+            try? await fixture.remove()
+            throw error
+        }
+
+        try await fixture.remove()
+    }
+}
+
+@Test(
+    "Thread merge remaps cached message state"
+)
+func remapsCachedThreadAfterMerge() async throws {
+    try await withApp(
+        configure: configure
+    ) { app in
+        let fixture = try await DatabaseFixture(
+            app: app
+        )
+
+        do {
+            let messageA =
+                "\(fixture.prefix)-a@example.com"
+
+            let messageB =
+                "\(fixture.prefix)-b@example.com"
+
+            let messageC =
+                "\(fixture.prefix)-c@example.com"
+
+            let root =
+                "\(fixture.prefix)-root@example.com"
+
+            let initialA = try fixture.message(
+                number: 1,
+                messageID: messageA
+            )
+
+            let b = try fixture.message(
+                number: 2,
+                messageID: messageB,
+                inReplyTo: root
+            )
+
+            let movedA = try fixture.message(
+                number: 3,
+                messageID: messageA,
+                inReplyTo: messageB
+            )
+
+            let c = try fixture.message(
+                number: 4,
+                messageID: messageC,
+                inReplyTo: messageA
+            )
+
+            _ = try await PostgresIngestService(
+                client: app.postgres
+            ).ingestBatch(
+                [
+                    initialA,
+                    b,
+                    movedA,
+                    c,
+                ],
+                mailingListID:
+                    fixture.mailingListID,
+                epoch: fixture.epoch,
+                expectedPreviousCommitOID: nil,
+                logger: app.logger
+            )
+
+            let aState = try #require(
+                try await fixture.messageState(
+                    messageID: messageA
+                )
+            )
+
+            let bState = try #require(
+                try await fixture.messageState(
+                    messageID: messageB
+                )
+            )
+
+            let cState = try #require(
+                try await fixture.messageState(
+                    messageID: messageC
+                )
+            )
+
+            #expect(
+                aState.threadID
+                    == bState.threadID
+            )
+            #expect(
+                bState.threadID
+                    == cState.threadID
+            )
+            #expect(
+                try await fixture.threadCount()
+                    == 1
+            )
+        } catch {
+            try? await fixture.remove()
+            throw error
+        }
+
+        try await fixture.remove()
     }
 }
