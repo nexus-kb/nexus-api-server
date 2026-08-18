@@ -210,6 +210,11 @@ private struct TestMessageState {
     let isPlaceholder: Bool
 }
 
+private struct TestThreadMetadata {
+    let subject: String?
+    let lastUpdatedAt: Date
+}
+
 private final class DatabaseFixture {
     let app: Application
     let prefix: String
@@ -250,17 +255,24 @@ private final class DatabaseFixture {
         inReplyTo: String? = nil,
         to: [String] = [],
         cc: [String] = [],
+        subject: String? = nil,
+        dateHeader: String =
+            "Tue, 18 Aug 2026 12:00:00 -0400",
         invalidPatchIndex: Bool = false
     ) throws -> PreparedPublicInboxMessage {
         let resolvedMessageID =
             messageID
             ?? "\(prefix)-\(number)@example.com"
 
+        let resolvedSubject =
+            subject
+            ?? "Batch transaction test \(number)"
+
         var headerLines = [
             "From: Batch Test <batch-test@example.com>",
             "Message-ID: <\(resolvedMessageID)>",
-            "Subject: Batch transaction test \(number)",
-            "Date: Tue, 18 Aug 2026 12:00:00 -0400",
+            "Subject: \(resolvedSubject)",
+            "Date: \(dateHeader)",
         ]
 
         if let inReplyTo {
@@ -500,6 +512,66 @@ private final class DatabaseFixture {
             return TestMessageState(
                 threadID: value.0,
                 isPlaceholder: value.1
+            )
+        }
+
+        return nil
+    }
+
+    func mailingListBlobOID(
+        messageID: String
+    ) async throws -> String? {
+        let rows = try await app.postgres.query(
+            """
+            SELECT link.archive_blob_oid
+            FROM messages_mailing_lists
+                AS link
+            JOIN messages AS message
+              ON message.id =
+                    link.message_id
+            WHERE message.message_id =
+                    \(messageID)
+              AND link.mailing_list_id =
+                    \(mailingListID)
+            """,
+            logger: app.logger
+        )
+
+        for try await row in rows {
+            return try row.decode(
+                String?.self
+            )
+        }
+
+        return nil
+    }
+
+    func threadMetadata(
+        messageID: String
+    ) async throws -> TestThreadMetadata? {
+        let rows = try await app.postgres.query(
+            """
+            SELECT
+                thread.subject,
+                thread.last_updated_at
+            FROM threads AS thread
+            JOIN messages AS message
+              ON message.thread_id =
+                    thread.id
+            WHERE message.message_id =
+                    \(messageID)
+            """,
+            logger: app.logger
+        )
+
+        for try await row in rows {
+            let value = try row.decode(
+                (String?, Date).self
+            )
+
+            return TestThreadMetadata(
+                subject: value.0,
+                lastUpdatedAt: value.1
             )
         }
 
@@ -932,6 +1004,112 @@ func remapsCachedThreadAfterMerge() async throws {
             #expect(
                 try await fixture.threadCount()
                     == 1
+            )
+        } catch {
+            try? await fixture.remove()
+            throw error
+        }
+
+        try await fixture.remove()
+    }
+}
+
+@Test(
+    "Batch preserves association and thread metadata ordering"
+)
+func batchesAssociationsAndThreadMetadata()
+    async throws
+{
+    try await withApp(
+        configure: configure
+    ) { app in
+        let fixture = try await DatabaseFixture(
+            app: app
+        )
+
+        do {
+            let rootMessageID =
+                "\(fixture.prefix)-metadata-root@example.com"
+
+            let replyMessageID =
+                "\(fixture.prefix)-metadata-reply@example.com"
+
+            let firstRoot = try fixture.message(
+                number: 1,
+                messageID: rootMessageID,
+                subject: "Initial root subject",
+                dateHeader:
+                    "Tue, 18 Aug 2026 10:00:00 -0400"
+            )
+
+            let reply = try fixture.message(
+                number: 2,
+                messageID: replyMessageID,
+                inReplyTo: rootMessageID,
+                subject: "Later reply subject",
+                dateHeader:
+                    "Tue, 18 Aug 2026 14:00:00 -0400"
+            )
+
+            let finalRoot = try fixture.message(
+                number: 3,
+                messageID: rootMessageID,
+                subject: "Final root subject",
+                dateHeader:
+                    "Tue, 18 Aug 2026 12:00:00 -0400"
+            )
+
+            _ = try await PostgresIngestService(
+                client: app.postgres
+            ).ingestBatch(
+                [
+                    firstRoot,
+                    reply,
+                    finalRoot,
+                ],
+                mailingListID:
+                    fixture.mailingListID,
+                epoch: fixture.epoch,
+                expectedPreviousCommitOID: nil,
+                logger: app.logger
+            )
+
+            #expect(
+                try await fixture
+                    .mailingListBlobOID(
+                        messageID:
+                            rootMessageID
+                    )
+                    == finalRoot.blobOID
+            )
+
+            #expect(
+                try await fixture
+                    .mailingListBlobOID(
+                        messageID:
+                            replyMessageID
+                    )
+                    == reply.blobOID
+            )
+
+            let metadata = try #require(
+                try await fixture.threadMetadata(
+                    messageID: rootMessageID
+                )
+            )
+
+            #expect(
+                metadata.subject
+                    == "Final root subject"
+            )
+
+            let replyDate = try #require(
+                reply.parsed.message.date
+            )
+
+            #expect(
+                metadata.lastUpdatedAt
+                    == replyDate
             )
         } catch {
             try? await fixture.remove()

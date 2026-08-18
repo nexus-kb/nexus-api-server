@@ -60,10 +60,25 @@ struct PostgresIngestService: Sendable {
         var threadID: Int64
     }
 
+    private struct ThreadMetadataInput:
+        Sendable
+    {
+        var threadID: Int64
+        let rootCandidateMessageID: String
+        let subject: String
+        let timestamp: Date
+    }
+
     private struct BatchPersistenceState:
         Sendable
     {
         var messagesByMessageID: [String: MessageState] = [:]
+
+        var mailingListBlobOIDByMessageDatabaseID:
+            [Int64: String] = [:]
+
+        var threadMetadataInputs:
+            [ThreadMetadataInput] = []
 
         var recipientsByMessageDatabaseID: [Int64: [ResolvedBatchRecipient]] = [:]
 
@@ -91,6 +106,22 @@ struct PostgresIngestService: Sendable {
                 messagesByMessageID[
                     messageID
                 ] = state
+            }
+
+            for index
+                in threadMetadataInputs.indices
+            {
+                guard
+                    threadMetadataInputs[
+                        index
+                    ].threadID == sourceThreadID
+                else {
+                    continue
+                }
+
+                threadMetadataInputs[
+                    index
+                ].threadID = targetThreadID
             }
         }
     }
@@ -205,8 +236,6 @@ struct PostgresIngestService: Sendable {
                             message.blobOID,
                         parsed:
                             message.parsed,
-                        mailingListID:
-                            mailingListID,
                         batchState:
                             &batchState,
                         connection: connection,
@@ -233,6 +262,23 @@ struct PostgresIngestService: Sendable {
                     )
                 )
             }
+
+            try await persistMailingListLinks(
+                linksByMessageDatabaseID:
+                    batchState
+                    .mailingListBlobOIDByMessageDatabaseID,
+                mailingListID: mailingListID,
+                connection: connection,
+                logger: logger
+            )
+
+            try await updateThreadMetadata(
+                inputs:
+                    batchState
+                    .threadMetadataInputs,
+                connection: connection,
+                logger: logger
+            )
 
             try await recipientService
                 .replaceRecipients(
@@ -287,7 +333,6 @@ struct PostgresIngestService: Sendable {
     private func persistMessage(
         blobOID: String,
         parsed: ParsedIngestMessage,
-        mailingListID: Int64,
         batchState:
             inout BatchPersistenceState,
         connection: PostgresConnection,
@@ -411,14 +456,6 @@ struct PostgresIngestService: Sendable {
             threadID: targetThreadID
         )
 
-        try await linkMessageToMailingList(
-            messageDatabaseID: messageDatabaseID,
-            mailingListID: mailingListID,
-            blobOID: blobOID,
-            connection: connection,
-            logger: logger
-        )
-
         try await PostgresPatchIngestService()
             .persist(
                 parsed: parsed,
@@ -428,14 +465,19 @@ struct PostgresIngestService: Sendable {
                 logger: logger
             )
 
-        try await updateThreadMetadata(
-            threadID: targetThreadID,
-            rootCandidateMessageID:
-                message.messageID,
-            subject: message.subject,
-            timestamp: timestamp,
-            connection: connection,
-            logger: logger
+        batchState
+            .mailingListBlobOIDByMessageDatabaseID[
+                messageDatabaseID
+            ] = blobOID
+
+        batchState.threadMetadataInputs.append(
+            ThreadMetadataInput(
+                threadID: targetThreadID,
+                rootCandidateMessageID:
+                    message.messageID,
+                subject: message.subject,
+                timestamp: timestamp
+            )
         )
 
         return (
@@ -632,13 +674,31 @@ struct PostgresIngestService: Sendable {
          )
      }
 
-    private func linkMessageToMailingList(
-        messageDatabaseID: Int64,
+    private func persistMailingListLinks(
+        linksByMessageDatabaseID:
+            [Int64: String],
         mailingListID: Int64,
-        blobOID: String,
         connection: PostgresConnection,
         logger: Logger
     ) async throws {
+        let links =
+            linksByMessageDatabaseID
+            .sorted {
+                $0.key < $1.key
+            }
+
+        guard !links.isEmpty else {
+            return
+        }
+
+        let messageIDs = links.map {
+            $0.key
+        }
+
+        let blobOIDs = links.map {
+            $0.value
+        }
+
         try await execute(
             """
             INSERT INTO messages_mailing_lists (
@@ -646,10 +706,16 @@ struct PostgresIngestService: Sendable {
                 mailing_list_id,
                 archive_blob_oid
             )
-            VALUES (
-                \(messageDatabaseID),
+            SELECT
+                input.message_id,
                 \(mailingListID),
-                \(blobOID)
+                input.archive_blob_oid
+            FROM unnest(
+                \(messageIDs)::bigint[],
+                \(blobOIDs)::text[]
+            ) AS input(
+                message_id,
+                archive_blob_oid
             )
             ON CONFLICT (
                 message_id,
@@ -664,31 +730,103 @@ struct PostgresIngestService: Sendable {
     }
 
     private func updateThreadMetadata(
-        threadID: Int64,
-        rootCandidateMessageID: String,
-        subject: String,
-        timestamp: Date,
+        inputs: [ThreadMetadataInput],
         connection: PostgresConnection,
         logger: Logger
     ) async throws {
+        guard !inputs.isEmpty else {
+            return
+        }
+
+        let threadIDs = inputs.map {
+            $0.threadID
+        }
+
+        let rootCandidateMessageIDs =
+            inputs.map {
+                $0.rootCandidateMessageID
+            }
+
+        let subjects = inputs.map {
+            $0.subject
+        }
+
+        let timestamps = inputs.map {
+            $0.timestamp
+        }
+
         try await execute(
             """
-            UPDATE threads
+            WITH metadata_input AS (
+                SELECT
+                    input.thread_id,
+                    input.root_candidate_message_id,
+                    input.subject,
+                    input.message_timestamp,
+                    input.ordinality
+                FROM unnest(
+                    \(threadIDs)::bigint[],
+                    \(rootCandidateMessageIDs)::text[],
+                    \(subjects)::text[],
+                    \(timestamps)::timestamptz[]
+                ) WITH ORDINALITY
+                  AS input(
+                      thread_id,
+                      root_candidate_message_id,
+                      subject,
+                      message_timestamp,
+                      ordinality
+                  )
+            ),
+            metadata_by_thread AS (
+                SELECT
+                    thread.id AS thread_id,
+                    COALESCE(
+                        (
+                            array_agg(
+                                input.subject
+                                ORDER BY
+                                    input.ordinality
+                                    DESC
+                            )
+                            FILTER (
+                                WHERE
+                                    input
+                                    .root_candidate_message_id
+                                    =
+                                    thread
+                                    .root_message_id
+                            )
+                        )[1],
+                        thread.subject,
+                        (
+                            array_agg(
+                                input.subject
+                                ORDER BY
+                                    input.ordinality
+                            )
+                        )[1]
+                    ) AS subject,
+                    GREATEST(
+                        thread.last_updated_at,
+                        max(
+                            input.message_timestamp
+                        )
+                    ) AS last_updated_at
+                FROM metadata_input AS input
+                JOIN threads AS thread
+                  ON thread.id =
+                        input.thread_id
+                GROUP BY thread.id
+            )
+            UPDATE threads AS thread
             SET
-                subject = CASE
-                    WHEN root_message_id =
-                        \(rootCandidateMessageID)
-                    THEN \(subject)
-                    ELSE COALESCE(
-                        subject,
-                        \(subject)
-                    )
-                END,
-                last_updated_at = GREATEST(
-                    last_updated_at,
-                    \(timestamp)
-                )
-            WHERE id = \(threadID)
+                subject = metadata.subject,
+                last_updated_at =
+                    metadata.last_updated_at
+            FROM metadata_by_thread AS metadata
+            WHERE thread.id =
+                    metadata.thread_id
             """,
             on: connection,
             logger: logger
