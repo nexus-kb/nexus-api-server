@@ -3,6 +3,9 @@ It is built using Swift 6, Vapor 4, and uses Postgres 18 as the database.
 It is developed in Xcode, use Xcode MCP tools as needed. The docker-compose.yml
 and Dockerfile is a placeholder and is not used. 
 
+Postgres18 runs as a container on macOS and we use apple container CLI to manage
+it.
+
 I want to understand every line of code that goes into this project. Never
 create, edit, move, rename, or delete project files unless I explicitly ask you
 to do so. Instead, show me every proposed edit in the chat so I can type it in

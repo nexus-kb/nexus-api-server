@@ -38,9 +38,11 @@ struct ScanPublicInboxArchiveJob: AsyncJob {
         _ context: QueueContext,
         _ payload: Payload
     ) async throws {
-        guard (1...500).contains(
-            payload.batchSize
-        ) else {
+        guard
+            PublicInboxIngestConfiguration
+                .batchSizeRange
+                .contains(payload.batchSize)
+        else {
             throw PublicInboxIngestJobError
                 .invalidBatchSize(
                     payload.batchSize
@@ -92,21 +94,35 @@ struct ScanPublicInboxArchiveJob: AsyncJob {
         }
 
         for epoch in selectedEpochs {
+            let targetTipOID =
+                try await context
+                .application
+                .threadPool
+                .runIfActive {
+                    try PublicInboxEpochRepository(
+                        epoch: epoch
+                    ).tipOID()
+                }
+
+            let jobID = JobIdentifier()
+
             try await context.queue.dispatch(
                 IngestPublicInboxEpochJob.self,
                 .init(
+                    queueJobID: jobID.string,
                     mailingListID:
                         payload.mailingListID,
                     epoch: epoch.number,
                     repositoryPath:
                         epoch.repositoryURL.path,
-                    targetTipOID: nil,
+                    targetTipOID: targetTipOID,
                     batchSize: payload.batchSize,
                     remainingMessageLimit:
                         payload
                             .runMessageLimitPerEpoch
                 ),
-                maxRetryCount: 3
+                maxRetryCount: 3,
+                id: jobID
             )
         }
     }
@@ -152,6 +168,7 @@ struct IngestPublicInboxEpochJob: AsyncJob {
         Codable,
         Sendable
     {
+        let queueJobID: String
         let mailingListID: Int64
         let epoch: Int32
         let repositoryPath: String
@@ -160,184 +177,197 @@ struct IngestPublicInboxEpochJob: AsyncJob {
         let remainingMessageLimit: Int?
     }
 
-    private struct PreparedMessage:
-        Sendable
-    {
-        let commit: PublicInboxCommit
-        let parsed: ParsedIngestMessage
-    }
-
-    private struct PreparedBatch:
-        Sendable
-    {
-        let targetTipOID: String
-        let availableCount: Int
-        let messages: [PreparedMessage]
-    }
-
     func dequeue(
         _ context: QueueContext,
         _ payload: Payload
     ) async throws {
-        guard (1...500).contains(
-            payload.batchSize
-        ) else {
+        guard
+            PublicInboxIngestConfiguration
+                .batchSizeRange
+                .contains(payload.batchSize)
+        else {
             throw PublicInboxIngestJobError
                 .invalidBatchSize(
                     payload.batchSize
                 )
         }
 
+        if let limit = payload.remainingMessageLimit,
+            limit < 1
+        {
+            throw
+                PublicInboxIngestJobError
+                .invalidMessageLimit(limit)
+        }
+
         let store = PostgresIngestService(
             client: context.application.postgres
         )
 
-        let cursor = try await store.archiveCursor(
+        let initialCursor = try await store.archiveCursor(
             mailingListID: payload.mailingListID,
             epoch: payload.epoch,
             logger: context.logger
         )
 
-        let allowedCount = min(
-            payload.batchSize,
-            payload.remainingMessageLimit
-                ?? payload.batchSize
+        let epoch = PublicInboxEpoch(
+            number: payload.epoch,
+            repositoryURL: URL(
+                fileURLWithPath:
+                    payload.repositoryPath,
+                isDirectory: true
+            )
         )
 
-        guard allowedCount > 0 else {
-            return
-        }
+        let repository =
+            PublicInboxEpochRepository(
+                epoch: epoch
+            )
 
-        let batch = try await context
+        let targetTipOID =
+            try await context
             .application
             .threadPool
             .runIfActive {
-                let epoch = PublicInboxEpoch(
-                    number: payload.epoch,
-                    repositoryURL: URL(
-                        fileURLWithPath:
-                            payload.repositoryPath,
-                        isDirectory: true
-                    )
-                )
-
-                let repository =
-                    PublicInboxEpochRepository(
-                        epoch: epoch
-                    )
-
-                let targetTipOID =
-                    try payload.targetTipOID
+                try payload.targetTipOID
                     ?? repository.tipOID()
+            }
 
-                let available = try repository
-                    .commitOIDs(
-                        after: cursor,
+        let manifest =
+            try await context
+            .application
+            .threadPool
+            .runIfActive {
+                try repository
+                    .makeRevisionManifest(
+                        after: initialCursor,
                         through: targetTipOID
                     )
+            }
 
-                let selected = Array(
-                    available.prefix(allowedCount)
+        defer {
+            manifest.remove()
+        }
+
+        let lease = PostgresQueueJobLease(
+            client: context.application.postgres,
+            jobID: payload.queueJobID,
+            ownerID:
+                context.application
+                .postgresQueueLeaseOwner,
+            logger: context.logger
+        )
+
+        try await lease.start()
+
+        do {
+            var expectedCursor = initialCursor
+            var processedCount = 0
+
+            while payload.remainingMessageLimit.map({
+                processedCount < $0
+            }) ?? true {
+                try await lease.assertOwned()
+
+                let remainingAllowance =
+                    payload.remainingMessageLimit.map {
+                        $0 - processedCount
+                    }
+
+                let nextBatchSize = min(
+                    payload.batchSize,
+                    remainingAllowance
+                        ?? payload.batchSize
                 )
 
-                let parser =
-                    IngestMessageParser()
+                guard nextBatchSize > 0 else {
+                    break
+                }
 
-                let messages = try repository
-                    .loadMessages(
-                        commitOIDs: selected
-                    )
-                    .map {
-                        PreparedMessage(
-                            commit: $0,
-                            parsed: try parser.parse(
-                                $0.rawMessage
-                            )
+                let commitOIDs =
+                    try await context
+                    .application
+                    .threadPool
+                    .runIfActive {
+                        try manifest.nextBatch(
+                            maximumCount:
+                                nextBatchSize
                         )
                     }
 
-                return PreparedBatch(
-                    targetTipOID: targetTipOID,
-                    availableCount:
-                        available.count,
-                    messages: messages
-                )
-            }
+                guard !commitOIDs.isEmpty else {
+                    break
+                }
 
-        guard !batch.messages.isEmpty else {
-            context.logger.info(
-                "Public-inbox epoch is current",
-                metadata: [
-                    "mailing-list-id":
-                        "\(payload.mailingListID)",
-                    "epoch": "\(payload.epoch)",
-                ]
-            )
-            return
-        }
+                let messages =
+                    try await context
+                    .application
+                    .threadPool
+                    .runIfActive {
+                        let parser =
+                            IngestMessageParser()
 
-        var expectedCursor = cursor
+                        return
+                            try repository
+                            .loadMessages(
+                                commitOIDs:
+                                    commitOIDs
+                            )
+                            .map {
+                                PreparedPublicInboxMessage(
+                                    commitOID:
+                                        $0.commitOID,
+                                    blobOID:
+                                        $0.blobOID,
+                                    parsed:
+                                        try parser.parse(
+                                            $0.rawMessage
+                                        )
+                                )
+                            }
+                    }
 
-        for message in batch.messages {
-            _ = try await store.ingest(
-                commit: message.commit,
-                parsed: message.parsed,
-                mailingListID:
-                    payload.mailingListID,
-                epoch: payload.epoch,
-                expectedPreviousCommitOID:
-                    expectedCursor,
-                logger: context.logger
-            )
+                try await lease.assertOwned()
 
-            expectedCursor =
-                message.commit.commitOID
-        }
-
-        let remainingLimit =
-            payload.remainingMessageLimit.map {
-                $0 - batch.messages.count
-            }
-
-        let hasMoreInSnapshot =
-            batch.availableCount
-            > batch.messages.count
-
-        let mayContinue =
-            remainingLimit == nil
-            || remainingLimit! > 0
-
-        if hasMoreInSnapshot && mayContinue {
-            try await context.queue.dispatch(
-                Self.self,
-                .init(
+                _ = try await store.ingestBatch(
+                    messages,
                     mailingListID:
                         payload.mailingListID,
                     epoch: payload.epoch,
-                    repositoryPath:
-                        payload.repositoryPath,
-                    targetTipOID:
-                        batch.targetTipOID,
-                    batchSize:
-                        payload.batchSize,
-                    remainingMessageLimit:
-                        remainingLimit
-                ),
-                maxRetryCount: 3
-            )
-        }
+                    expectedPreviousCommitOID:
+                        expectedCursor,
+                    logger: context.logger
+                )
 
-        context.logger.info(
-            "Ingested public-inbox batch",
-            metadata: [
-                "mailing-list-id":
-                    "\(payload.mailingListID)",
-                "epoch": "\(payload.epoch)",
-                "message-count":
-                    "\(batch.messages.count)",
-                "cursor":
-                    "\(expectedCursor ?? "")",
-            ]
-        )
+                expectedCursor =
+                    messages.last?.commitOID
+                    ?? expectedCursor
+
+                processedCount += messages.count
+
+                context.logger.info(
+                    "Ingested public-inbox database batch",
+                    metadata: [
+                        "mailing-list-id":
+                            "\(payload.mailingListID)",
+                        "epoch":
+                            "\(payload.epoch)",
+                        "message-count":
+                            "\(messages.count)",
+                        "total-message-count":
+                            "\(processedCount)",
+                        "cursor":
+                            "\(expectedCursor ?? "")",
+                        "target-tip":
+                            "\(targetTipOID)",
+                    ]
+                )
+            }
+
+            await lease.stop()
+        } catch {
+            await lease.stop()
+            throw error
+        }
     }
 }

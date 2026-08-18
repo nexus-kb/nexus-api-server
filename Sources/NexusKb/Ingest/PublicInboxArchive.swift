@@ -18,6 +18,133 @@ struct PublicInboxCommit: Sendable, Equatable {
     let rawMessage: Data
 }
 
+final class PublicInboxRevisionManifest:
+    @unchecked Sendable
+{
+    private let url: URL
+    private let fileHandle: FileHandle
+    private var buffer = Data()
+    private var reachedEnd = false
+    private var wasRemoved = false
+
+    init(url: URL) throws {
+        self.url = url
+        self.fileHandle = try FileHandle(
+            forReadingFrom: url
+        )
+    }
+
+    func nextBatch(
+        maximumCount: Int
+    ) throws -> [String] {
+        guard maximumCount > 0 else {
+            return []
+        }
+
+        var result: [String] = []
+        result.reserveCapacity(maximumCount)
+
+        while result.count < maximumCount,
+            let oid = try nextOID()
+        {
+            result.append(oid)
+        }
+
+        return result
+    }
+
+    func remove() {
+        guard !wasRemoved else {
+            return
+        }
+
+        wasRemoved = true
+
+        try? fileHandle.close()
+        try? FileManager.default.removeItem(
+            at: url
+        )
+    }
+
+    deinit {
+        remove()
+    }
+
+    private func nextOID() throws -> String? {
+        while true {
+            if let newline =
+                buffer.firstIndex(of: 10)
+            {
+                let lineData =
+                    buffer[..<newline]
+
+                buffer.removeSubrange(
+                    buffer.startIndex...newline
+                )
+
+                guard !lineData.isEmpty else {
+                    continue
+                }
+
+                guard
+                    let oid = String(
+                        data: lineData,
+                        encoding: .utf8
+                    )
+                else {
+                    throw
+                        PublicInboxArchiveError
+                        .invalidRevisionManifest(
+                            "OID was not UTF-8"
+                        )
+                }
+
+                return oid
+            }
+
+            if reachedEnd {
+                guard !buffer.isEmpty else {
+                    return nil
+                }
+
+                let lineData = buffer
+                buffer.removeAll(
+                    keepingCapacity: false
+                )
+
+                guard
+                    let oid = String(
+                        data: lineData,
+                        encoding: .utf8
+                    ),
+                    !oid.isEmpty
+                else {
+                    throw
+                        PublicInboxArchiveError
+                        .invalidRevisionManifest(
+                            "invalid final OID"
+                        )
+                }
+
+                return oid
+            }
+
+            let chunk = try fileHandle.read(
+                upToCount: 64 * 1_024
+            )
+
+            guard let chunk,
+                !chunk.isEmpty
+            else {
+                reachedEnd = true
+                continue
+            }
+
+            buffer.append(chunk)
+        }
+    }
+}
+
 enum PublicInboxArchiveError:
     Error,
     Sendable,
@@ -37,6 +164,12 @@ enum PublicInboxArchiveError:
     )
     case missingMessageBlob(String)
     case batchTooLarge(Int)
+    case cursorAndTipHaveDiverged(
+        cursor: String,
+        tip: String
+    )
+    case invalidRevisionManifest(String)
+    case unableToCreateTemporaryFile(String)
 }
 
 struct PublicInboxArchive: Sendable {
@@ -127,26 +260,30 @@ struct PublicInboxEpochRepository: Sendable {
         )
     }
 
-    func commitOIDs(
+    func makeRevisionManifest(
         after cursor: String?,
         through tip: String
-    ) throws -> [String] {
+    ) throws -> PublicInboxRevisionManifest {
         if let cursor {
-            let result = try git.run(
-                arguments: [
-                    "-C",
-                    epoch.repositoryURL.path,
-                    "merge-base",
-                    "--is-ancestor",
-                    cursor,
-                    tip,
-                ],
-                acceptedStatuses: [0, 1]
-            )
+            if cursor == tip {
+                return try emptyRevisionManifest()
+            }
 
-            guard result.status == 0 else {
+            if try isAncestor(
+                tip,
+                of: cursor
+            ) {
+                return try emptyRevisionManifest()
+            }
+
+            guard
+                try isAncestor(
+                    cursor,
+                    of: tip
+                )
+            else {
                 throw PublicInboxArchiveError
-                    .cursorIsNotAncestor(
+                    .cursorAndTipHaveDiverged(
                         cursor: cursor,
                         tip: tip
                     )
@@ -157,20 +294,82 @@ struct PublicInboxEpochRepository: Sendable {
             "\($0)..\(tip)"
         } ?? tip
 
-        let output = try git.text(
+        let manifestURL =
+            FileManager.default
+            .temporaryDirectory
+            .appendingPathComponent(
+                "nexus-kb-\(UUID().uuidString).oids"
+            )
+
+        do {
+            try git.run(
+                arguments: [
+                    "-C",
+                    epoch.repositoryURL.path,
+                    "rev-list",
+                    "--reverse",
+                    "--first-parent",
+                    revision,
+                ],
+                standardOutputURL: manifestURL
+            )
+
+            return try PublicInboxRevisionManifest(
+                url: manifestURL
+            )
+        } catch {
+            try? FileManager.default.removeItem(
+                at: manifestURL
+            )
+            throw error
+        }
+    }
+
+    private func isAncestor(
+        _ ancestor: String,
+        of descendant: String
+    ) throws -> Bool {
+        let result = try git.run(
             arguments: [
                 "-C",
                 epoch.repositoryURL.path,
-                "rev-list",
-                "--reverse",
-                "--first-parent",
-                revision,
-            ]
+                "merge-base",
+                "--is-ancestor",
+                ancestor,
+                descendant,
+            ],
+            acceptedStatuses: [0, 1]
         )
 
-        return output
-            .split(whereSeparator: \.isNewline)
-            .map(String.init)
+        return result.status == 0
+    }
+
+    private func emptyRevisionManifest()
+        throws -> PublicInboxRevisionManifest
+    {
+        let manifestURL =
+            FileManager.default
+            .temporaryDirectory
+            .appendingPathComponent(
+                "nexus-kb-\(UUID().uuidString).oids"
+            )
+
+        guard
+            FileManager.default.createFile(
+                atPath: manifestURL.path,
+                contents: Data()
+            )
+        else {
+            throw
+                PublicInboxArchiveError
+                .unableToCreateTemporaryFile(
+                    manifestURL.path
+                )
+        }
+
+        return try PublicInboxRevisionManifest(
+            url: manifestURL
+        )
     }
 
     func loadMessages(
@@ -180,7 +379,11 @@ struct PublicInboxEpochRepository: Sendable {
             return []
         }
 
-        guard commitOIDs.count <= 500 else {
+        guard
+            PublicInboxIngestConfiguration
+                .batchSizeRange
+                .contains(commitOIDs.count)
+        else {
             throw PublicInboxArchiveError.batchTooLarge(
                 commitOIDs.count
             )
@@ -234,44 +437,145 @@ private struct GitProcess: Sendable {
         return value
     }
 
+    @discardableResult
     func run(
         arguments: [String],
         standardInput: Data? = nil,
+        standardOutputURL: URL? = nil,
         acceptedStatuses: Set<Int32> = [0]
     ) throws -> Result {
         let process = Process()
-        let standardOutput = Pipe()
-        let standardError = Pipe()
 
         process.executableURL = URL(
             fileURLWithPath: "/usr/bin/git"
         )
         process.arguments = arguments
-        process.standardOutput = standardOutput
-        process.standardError = standardError
+
+        let temporaryDirectory =
+            FileManager.default
+            .temporaryDirectory
+
+        let standardErrorURL =
+            temporaryDirectory
+            .appendingPathComponent(
+                "nexus-kb-git-stderr-\(UUID().uuidString)"
+            )
+
+        try Data().write(
+            to: standardErrorURL,
+            options: .atomic
+        )
+
+        let standardErrorHandle =
+            try FileHandle(
+                forWritingTo: standardErrorURL
+            )
+
+        process.standardError =
+            standardErrorHandle
+
+        var standardInputURL: URL?
+        var standardInputHandle: FileHandle?
 
         if let standardInput {
-            let input = Pipe()
-            process.standardInput = input
+            let url =
+                temporaryDirectory
+                .appendingPathComponent(
+                    "nexus-kb-git-stdin-\(UUID().uuidString)"
+                )
 
-            try process.run()
-            input.fileHandleForWriting.write(
-                standardInput
+            try standardInput.write(
+                to: url,
+                options: .atomic
             )
-            try input.fileHandleForWriting.close()
-        } else {
-            try process.run()
+
+            let handle = try FileHandle(
+                forReadingFrom: url
+            )
+
+            standardInputURL = url
+            standardInputHandle = handle
+            process.standardInput = handle
         }
 
-        let outputData =
-            standardOutput.fileHandleForReading
-                .readDataToEndOfFile()
+        let standardOutputPipe: Pipe?
+        let standardOutputHandle: FileHandle?
 
-        let errorData =
-            standardError.fileHandleForReading
+        if let standardOutputURL {
+            guard
+                FileManager.default.createFile(
+                    atPath: standardOutputURL.path,
+                    contents: nil
+                )
+            else {
+                throw
+                    PublicInboxArchiveError
+                    .unableToCreateTemporaryFile(
+                        standardOutputURL.path
+                    )
+            }
+
+            let handle = try FileHandle(
+                forWritingTo: standardOutputURL
+            )
+
+            standardOutputPipe = nil
+            standardOutputHandle = handle
+            process.standardOutput = handle
+        } else {
+            let pipe = Pipe()
+
+            standardOutputPipe = pipe
+            standardOutputHandle = nil
+            process.standardOutput = pipe
+        }
+
+        defer {
+            try? standardInputHandle?.close()
+            try? standardOutputHandle?.close()
+            try? standardErrorHandle.close()
+
+            if let standardInputURL {
+                try? FileManager.default.removeItem(
+                    at: standardInputURL
+                )
+            }
+
+            try? FileManager.default.removeItem(
+                at: standardErrorURL
+            )
+        }
+
+        try process.run()
+
+        /*
+         Read piped stdout while Git is running. stderr is
+         directed to a regular file, so it cannot fill a pipe
+         and deadlock Git while stdout is being consumed.
+         */
+        let outputData: Data
+
+        if let standardOutputPipe {
+            outputData =
+                standardOutputPipe
+                .fileHandleForReading
                 .readDataToEndOfFile()
+        } else {
+            outputData = Data()
+        }
 
         process.waitUntilExit()
+
+        /*
+         Close the parent-side write handles before reading
+         their files. The child process has already exited.
+         */
+        try standardOutputHandle?.close()
+        try standardErrorHandle.close()
+
+        let errorData = try Data(
+            contentsOf: standardErrorURL
+        )
 
         let result = Result(
             status: process.terminationStatus,

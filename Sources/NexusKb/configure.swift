@@ -14,9 +14,15 @@ func configure(_ app: Application) async throws {
     try await app.configurePostgres()
     
     // configure Vapor Queues using Postgres
+    let queueLeaseOwner = UUID()
+
+    app.postgresQueueLeaseOwner =
+        queueLeaseOwner
+
     app.queues.use(
         custom: PostgresQueuesDriver(
-            client: app.postgres
+            client: app.postgres,
+            leaseOwner: queueLeaseOwner
         )
     )
     

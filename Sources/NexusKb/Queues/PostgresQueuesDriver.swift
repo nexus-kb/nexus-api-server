@@ -9,13 +9,19 @@ import Foundation
 import PostgresNIO
 import Queues
 
-struct PostgresQueuesDriver: QueuesDriver {
+struct PostgresQueuesDriver:
+    QueuesDriver
+{
     let client: PostgresClient
+    let leaseOwner: UUID
 
-    func makeQueue(with context: QueueContext) -> any Queue {
+    func makeQueue(
+        with context: QueueContext
+    ) -> any Queue {
         PostgresQueue(
             client: client,
-            context: context
+            context: context,
+            leaseOwner: leaseOwner
         )
     }
 
@@ -29,8 +35,12 @@ private enum PostgresQueueError: Error {
 private struct PostgresQueue: AsyncQueue {
     let client: PostgresClient
     let context: QueueContext
+    let leaseOwner: UUID
     
-    private let visibilityTimeoutSeconds = 300
+    private var visibilityTimeoutSeconds: Int {
+        PublicInboxIngestConfiguration
+            .queueVisibilityTimeoutSeconds
+    }
     
     private var queueKey: String {
         context.queueName.makeKey(with: context.configuration.persistenceKey)
@@ -60,6 +70,8 @@ private struct PostgresQueue: AsyncQueue {
             FROM vapor_queue_jobs
             WHERE id = \(id.string)
                 AND queue_key = \(queueKey)
+                AND state = 'processing'
+                AND lease_owner = \(leaseOwner)
             """,
             logger: context.logger
         )
@@ -112,6 +124,7 @@ private struct PostgresQueue: AsyncQueue {
                 delay_until,
                 queued_at,
                 state,
+                lease_owner,
                 lease_expires_at,
                 updated_at
             )
@@ -126,6 +139,7 @@ private struct PostgresQueue: AsyncQueue {
                 \(data.queuedAt),
                 'stored',
                 NULL,
+                NULL,
                 now()
             )
             ON CONFLICT (id) DO UPDATE
@@ -138,19 +152,36 @@ private struct PostgresQueue: AsyncQueue {
                 delay_until = EXCLUDED.delay_until,
                 queued_at = EXCLUDED.queued_at,
                 state = 'stored',
+                lease_owner = NULL,
                 lease_expires_at = NULL,
                 updated_at = now()
             """
         )
     }
     
-    func clear(_ id: JobIdentifier) async throws {
-        try await execute(
+    func clear(
+        _ id: JobIdentifier
+    ) async throws {
+        let rows = try await client.query(
             """
             DELETE FROM vapor_queue_jobs
             WHERE id = \(id.string)
               AND queue_key = \(queueKey)
-            """
+              AND (
+                  state <> 'processing'
+                  OR lease_owner = \(leaseOwner)
+              )
+            RETURNING id
+            """,
+            logger: context.logger
+        )
+
+        for try await _ in rows {
+            return
+        }
+
+        throw PostgresQueueLeaseError.lost(
+            id.string
         )
     }
     
@@ -160,10 +191,18 @@ private struct PostgresQueue: AsyncQueue {
             UPDATE vapor_queue_jobs
             SET
                 state = 'ready',
+                lease_owner = NULL,
                 lease_expires_at = NULL,
                 updated_at = now()
             WHERE id = \(id.string)
               AND queue_key = \(queueKey)
+              AND (
+                  state = 'stored'
+                  OR (
+                      state = 'processing'
+                      AND lease_owner = \(leaseOwner)
+                  )
+              )
             """
         )
     }
@@ -197,6 +236,7 @@ private struct PostgresQueue: AsyncQueue {
             UPDATE vapor_queue_jobs AS job
             SET
                 state = 'processing',
+                lease_owner = \(leaseOwner),
                 lease_expires_at =
                     now() + make_interval(
                         secs => \(visibilityTimeoutSeconds)::double precision

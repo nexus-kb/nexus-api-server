@@ -44,14 +44,19 @@ func routes(_ app: Application) throws {
         )
 
         let batchSize =
-        input.batchSize ?? 25
+            input.batchSize
+            ?? PublicInboxIngestConfiguration
+            .defaultBatchSize
 
-        guard (1...500).contains(batchSize)
+        guard
+            PublicInboxIngestConfiguration
+                .batchSizeRange
+                .contains(batchSize)
                 else {
             throw Abort(
                 .badRequest,
                 reason:
-                    "batchSize must be between 1 and 500"
+                    "batchSize must be between 1 and 10000"
             )
         }
 
@@ -69,7 +74,7 @@ func routes(_ app: Application) throws {
         input.scanAll == true
         ? nil
         : input.runMessageLimitPerEpoch
-        ?? 100
+                ?? 20000
 
         if let limit =
             runMessageLimitPerEpoch,

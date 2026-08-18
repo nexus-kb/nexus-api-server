@@ -38,7 +38,24 @@ struct PostgresIngestResult:
     let wasAlreadyIngested: Bool
 }
 
+struct PreparedPublicInboxMessage:
+    Sendable
+{
+    let commitOID: String
+    let blobOID: String
+    let parsed: ParsedIngestMessage
+}
+
 struct PostgresIngestService: Sendable {
+
+    private struct NormalizedPublicInboxMessage:
+        Sendable
+    {
+        let commitOID: String
+        let blobOID: String
+        let parsed: ParsedIngestMessage
+    }
+
     let client: PostgresClient
 
     func archiveCursor(
@@ -119,7 +136,8 @@ struct PostgresIngestService: Sendable {
             }
 
             let persisted = try await persistMessage(
-                commit: commit,
+                commitOID: commit.commitOID,
+                blobOID: commit.blobOID,
                 parsed: normalized,
                 mailingListID: mailingListID,
                 connection: connection,
@@ -141,6 +159,108 @@ struct PostgresIngestService: Sendable {
                 threadID: persisted.threadID,
                 wasAlreadyIngested: false
             )
+        }
+    }
+
+    func ingestBatch(
+        _ messages:
+            [PreparedPublicInboxMessage],
+        mailingListID: Int64,
+        epoch: Int32,
+        expectedPreviousCommitOID: String?,
+        logger: Logger
+    ) async throws -> [PostgresIngestResult] {
+        guard let finalMessage = messages.last
+        else {
+            return []
+        }
+
+        let normalized = messages.map {
+            NormalizedPublicInboxMessage(
+                commitOID: $0.commitOID,
+                blobOID: $0.blobOID,
+                parsed:
+                    PostgresTextNormalizer
+                    .normalize($0.parsed)
+            )
+        }
+
+        return try await client.withTransaction(
+            logger: logger
+        ) { connection in
+            try await ensureEpoch(
+                mailingListID: mailingListID,
+                epoch: epoch,
+                connection: connection,
+                logger: logger
+            )
+
+            let currentCursor =
+                try await lockedCursor(
+                    mailingListID:
+                        mailingListID,
+                    epoch: epoch,
+                    connection: connection,
+                    logger: logger
+                )
+
+            guard
+                currentCursor
+                    == expectedPreviousCommitOID
+            else {
+                throw
+                    PostgresIngestError
+                    .cursorMismatch(
+                        expected:
+                            expectedPreviousCommitOID,
+                        actual:
+                            currentCursor
+                    )
+            }
+
+            var results: [PostgresIngestResult] = []
+            results.reserveCapacity(
+                normalized.count
+            )
+
+            for message in normalized {
+                let persisted =
+                    try await persistMessage(
+                        commitOID:
+                            message.commitOID,
+                        blobOID:
+                            message.blobOID,
+                        parsed:
+                            message.parsed,
+                        mailingListID:
+                            mailingListID,
+                        connection: connection,
+                        logger: logger
+                    )
+
+                results.append(
+                    PostgresIngestResult(
+                        messageID: persisted.id,
+                        threadID:
+                            persisted.threadID,
+                        wasAlreadyIngested:
+                            false
+                    )
+                )
+            }
+
+            try await advanceCursor(
+                mailingListID: mailingListID,
+                epoch: epoch,
+                expectedPreviousCommitOID:
+                    expectedPreviousCommitOID,
+                commitOID:
+                    finalMessage.commitOID,
+                connection: connection,
+                logger: logger
+            )
+
+            return results
         }
     }
 
@@ -171,7 +291,8 @@ struct PostgresIngestService: Sendable {
     }
 
     private func persistMessage(
-        commit: PublicInboxCommit,
+        commitOID: String,
+        blobOID: String,
         parsed: ParsedIngestMessage,
         mailingListID: Int64,
         connection: PostgresConnection,
@@ -279,7 +400,7 @@ struct PostgresIngestService: Sendable {
         try await linkMessageToMailingList(
             messageDatabaseID: messageDatabaseID,
             mailingListID: mailingListID,
-            blobOID: commit.blobOID,
+            blobOID: blobOID,
             connection: connection,
             logger: logger
         )
