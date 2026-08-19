@@ -4,7 +4,6 @@ import PostgresNIO
 import Testing
 import Vapor
 import VaporTesting
-import MailParser
 
 @Suite(
     "Public-inbox database batch tests",

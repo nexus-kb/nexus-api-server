@@ -1,6 +1,5 @@
 import PostgresNIO
 import Vapor
-import MailParser
 
 enum PostgresRecipientBatchError:
     Error,

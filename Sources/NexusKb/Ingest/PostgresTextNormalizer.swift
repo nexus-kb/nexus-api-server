@@ -1,5 +1,4 @@
 import Foundation
-import MailParser
 
 enum PostgresTextNormalizer {
     static func normalize(
@@ -38,10 +37,9 @@ enum PostgresTextNormalizer {
     }
 
     private static func normalize(
-        _ message: MailMessage
-    ) -> MailMessage {
-        MailMessage(
-            headers: message.headers,
+        _ message: IngestMailMessage
+    ) -> IngestMailMessage {
+        IngestMailMessage(
             messageID: normalize(
                 message.messageID
             ),
@@ -58,8 +56,6 @@ enum PostgresTextNormalizer {
                 normalize($0)
             },
             date: message.date,
-            receivedDate:
-                message.receivedDate,
             inReplyTo: message.inReplyTo.map {
                 normalize($0)
             },
@@ -74,9 +70,9 @@ enum PostgresTextNormalizer {
     }
 
     private static func normalize(
-        _ mailbox: Mailbox
-    ) -> Mailbox {
-        Mailbox(
+        _ mailbox: IngestMailbox
+    ) -> IngestMailbox {
+        IngestMailbox(
             name: mailbox.name.map {
                 normalize($0)
             },

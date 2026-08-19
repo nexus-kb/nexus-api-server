@@ -21,6 +21,22 @@ enum PublicInboxIngestJobError:
     case missingEpoch(Int32)
     case invalidBatchSize(Int)
     case invalidMessageLimit(Int)
+    case messageParseFailed(
+        commitOID: String,
+        blobOID: String,
+        error: String
+    )
+}
+
+struct PublicInboxEpochIngestTarget:
+    Codable,
+    Sendable,
+    Equatable
+{
+    let queueJobID: String
+    let epoch: Int32
+    let repositoryPath: String
+    let targetTipOID: String
 }
 
 struct ScanPublicInboxArchiveJob: AsyncJob {
@@ -93,6 +109,13 @@ struct ScanPublicInboxArchiveJob: AsyncJob {
             selectedEpochs = epochs
         }
 
+        var ingestTargets:
+            [PublicInboxEpochIngestTarget] = []
+
+        ingestTargets.reserveCapacity(
+            selectedEpochs.count
+        )
+
         for epoch in selectedEpochs {
             let targetTipOID =
                 try await context
@@ -104,27 +127,40 @@ struct ScanPublicInboxArchiveJob: AsyncJob {
                     ).tipOID()
                 }
 
-            let jobID = JobIdentifier()
-
-            try await context.queue.dispatch(
-                IngestPublicInboxEpochJob.self,
-                .init(
-                    queueJobID: jobID.string,
-                    mailingListID:
-                        payload.mailingListID,
+            ingestTargets.append(
+                PublicInboxEpochIngestTarget(
+                    queueJobID:
+                        JobIdentifier().string,
                     epoch: epoch.number,
                     repositoryPath:
                         epoch.repositoryURL.path,
-                    targetTipOID: targetTipOID,
+                    targetTipOID: targetTipOID
+                )
+            )
+        }
+
+        guard let firstTarget =
+                ingestTargets.first
+        else {
+            return
+        }
+
+        try await IngestPublicInboxEpochJob
+            .dispatch(
+                .init(
+                    mailingListID:
+                        payload.mailingListID,
+                    target: firstTarget,
+                    remainingTargets: Array(
+                        ingestTargets.dropFirst()
+                    ),
                     batchSize: payload.batchSize,
                     remainingMessageLimit:
                         payload
                             .runMessageLimitPerEpoch
                 ),
-                maxRetryCount: 3,
-                id: jobID
+                context: context
             )
-        }
     }
     
     private func loadArchivePath(
@@ -168,13 +204,45 @@ struct IngestPublicInboxEpochJob: AsyncJob {
         Codable,
         Sendable
     {
-        let queueJobID: String
         let mailingListID: Int64
-        let epoch: Int32
-        let repositoryPath: String
-        let targetTipOID: String?
+        let target: PublicInboxEpochIngestTarget
+        let remainingTargets:
+            [PublicInboxEpochIngestTarget]
         let batchSize: Int
         let remainingMessageLimit: Int?
+
+        func successor() -> Self? {
+            guard let nextTarget =
+                    remainingTargets.first
+            else {
+                return nil
+            }
+
+            return Self(
+                mailingListID: mailingListID,
+                target: nextTarget,
+                remainingTargets: Array(
+                    remainingTargets.dropFirst()
+                ),
+                batchSize: batchSize,
+                remainingMessageLimit:
+                    remainingMessageLimit
+            )
+        }
+    }
+
+    static func dispatch(
+        _ payload: Payload,
+        context: QueueContext
+    ) async throws {
+        try await context.queue.dispatch(
+            Self.self,
+            payload,
+            maxRetryCount: 3,
+            id: JobIdentifier(
+                string: payload.target.queueJobID
+            )
+        )
     }
 
     func dequeue(
@@ -206,15 +274,15 @@ struct IngestPublicInboxEpochJob: AsyncJob {
 
         let initialCursor = try await store.archiveCursor(
             mailingListID: payload.mailingListID,
-            epoch: payload.epoch,
+            epoch: payload.target.epoch,
             logger: context.logger
         )
 
         let epoch = PublicInboxEpoch(
-            number: payload.epoch,
+            number: payload.target.epoch,
             repositoryURL: URL(
                 fileURLWithPath:
-                    payload.repositoryPath,
+                    payload.target.repositoryPath,
                 isDirectory: true
             )
         )
@@ -225,13 +293,7 @@ struct IngestPublicInboxEpochJob: AsyncJob {
             )
 
         let targetTipOID =
-            try await context
-            .application
-            .threadPool
-            .runIfActive {
-                try payload.targetTipOID
-                    ?? repository.tipOID()
-            }
+            payload.target.targetTipOID
 
         let manifest =
             try await context
@@ -251,7 +313,7 @@ struct IngestPublicInboxEpochJob: AsyncJob {
 
         let lease = PostgresQueueJobLease(
             client: context.application.postgres,
-            jobID: payload.queueJobID,
+            jobID: payload.target.queueJobID,
             ownerID:
                 context.application
                 .postgresQueueLeaseOwner,
@@ -313,17 +375,34 @@ struct IngestPublicInboxEpochJob: AsyncJob {
                                 commitOIDs:
                                     commitOIDs
                             )
-                            .map {
-                                PreparedPublicInboxMessage(
-                                    commitOID:
-                                        $0.commitOID,
-                                    blobOID:
-                                        $0.blobOID,
-                                    parsed:
-                                        try parser.parse(
-                                            $0.rawMessage
+                            .map { message in
+                                do {
+                                    return
+                                        PreparedPublicInboxMessage(
+                                            commitOID:
+                                                message.commitOID,
+                                            blobOID:
+                                                message.blobOID,
+                                            parsed:
+                                                try parser.parse(
+                                                    message.rawMessage
+                                                )
                                         )
-                                )
+                                } catch {
+                                    throw
+                                        PublicInboxIngestJobError
+                                        .messageParseFailed(
+                                            commitOID:
+                                                message.commitOID,
+                                            blobOID:
+                                                message.blobOID,
+                                            error:
+                                                String(
+                                                    reflecting:
+                                                        error
+                                                )
+                                        )
+                                }
                             }
                     }
 
@@ -333,7 +412,7 @@ struct IngestPublicInboxEpochJob: AsyncJob {
                     messages,
                     mailingListID:
                         payload.mailingListID,
-                    epoch: payload.epoch,
+                    epoch: payload.target.epoch,
                     expectedPreviousCommitOID:
                         expectedCursor,
                     logger: context.logger
@@ -351,7 +430,7 @@ struct IngestPublicInboxEpochJob: AsyncJob {
                         "mailing-list-id":
                             "\(payload.mailingListID)",
                         "epoch":
-                            "\(payload.epoch)",
+                            "\(payload.target.epoch)",
                         "message-count":
                             "\(messages.count)",
                         "total-message-count":
@@ -361,6 +440,15 @@ struct IngestPublicInboxEpochJob: AsyncJob {
                         "target-tip":
                             "\(targetTipOID)",
                     ]
+                )
+            }
+
+            if let successor =
+                    payload.successor()
+            {
+                try await Self.dispatch(
+                    successor,
+                    context: context
                 )
             }
 

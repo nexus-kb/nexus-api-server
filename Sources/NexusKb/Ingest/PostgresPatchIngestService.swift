@@ -6,7 +6,6 @@
 //
 
 import Foundation
-import MailParser
 import PostgresNIO
 import Vapor
 
@@ -914,10 +913,10 @@ struct PostgresPatchIngestService: Sendable {
 
     private func authorsMatch(
         _ storedAuthor: String?,
-        _ incomingAuthor: Mailbox
+        _ incomingAuthor: IngestMailbox
     ) -> Bool {
         guard let storedAuthor,
-              let stored = RFCMailboxParser()
+              let stored = IngestAddressProjector
                 .parseList(storedAuthor)
                 .first
         else {

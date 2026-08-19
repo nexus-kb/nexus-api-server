@@ -1,6 +1,5 @@
 import Foundation
 import Testing
-import MailParser
 @testable import NexusKb
 
 @Test

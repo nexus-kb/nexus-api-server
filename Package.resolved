@@ -1,5 +1,5 @@
 {
-  "originHash" : "989ff878638cb03d68ef2217ebbb70ec1107cd8191c5015bf28bf1a913bcb310",
+  "originHash" : "86ee105830fa1e3c55b7bbb0a74e0af68742b254910147fb1e9dd721823f19b1",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -269,6 +269,15 @@
       "state" : {
         "revision" : "748ae8432a33e0965bbf0351fedd4e915e7f460c",
         "version" : "4.122.0"
+      }
+    },
+    {
+      "identity" : "viceroy",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/gistya/viceroy.git",
+      "state" : {
+        "revision" : "89e50c2c71d8ad0eedd4cd1bc072ec5a5e3fb7e7",
+        "version" : "1.1.1"
       }
     },
     {

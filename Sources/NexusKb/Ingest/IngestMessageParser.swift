@@ -8,9 +8,57 @@
 import Foundation
 import MailParser
 
+enum IngestMessageParserError:
+    Error,
+    Sendable,
+    Equatable
+{
+    case unparseableMessage
+    case missingMessageID
+}
+
+struct IngestMailbox:
+    Sendable,
+    Equatable,
+    Hashable,
+    Codable
+{
+    let name: String?
+    let address: String
+
+    var displayString: String {
+        guard let name, !name.isEmpty else {
+            return address
+        }
+
+        let escapedName = name.replacingOccurrences(
+            of: "\"",
+            with: "\\\""
+        )
+
+        return "\"\(escapedName)\" <\(address)>"
+    }
+}
+
+struct IngestMailMessage:
+    Sendable,
+    Equatable,
+    Codable
+{
+    let messageID: String
+    let subject: String
+    let from: IngestMailbox?
+    let to: [IngestMailbox]
+    let cc: [IngestMailbox]
+    let date: Date?
+    let inReplyTo: String?
+    let references: [String]
+    let textBody: String
+}
+
 struct ParsedIngestMessage: Sendable, Equatable {
-    let message: MailMessage
-    let author: Mailbox
+    let message: IngestMailMessage
+    let author: IngestMailbox
     let patch: ParsedPatchMetadata
 
     var authorDisplayString: String {
@@ -31,7 +79,7 @@ struct ParsedIngestMessage: Sendable, Equatable {
 }
 
 struct ParsedPatchMetadata: Sendable, Equatable {
-    static let parserVersion: Int32 = 2
+    static let parserVersion: Int32 = 3
 
     let partIndex: Int32
     let totalParts: Int32
@@ -41,17 +89,77 @@ struct ParsedPatchMetadata: Sendable, Equatable {
 }
 
 struct IngestMessageParser: Sendable {
-    private let messageParser = RFCMessageParser()
-    private let mailboxParser = RFCMailboxParser()
+    private let messageParser = MessageParser()
 
     func parse(
         _ data: Data
     ) throws -> ParsedIngestMessage {
-        let message = try messageParser.parse(data)
+        guard let parsedMessage = messageParser.parse(data)
+        else {
+            throw IngestMessageParserError
+                .unparseableMessage
+        }
+
+        guard let messageID = parsedMessage
+            .messageIDs
+            .compactMap(LegacyMessageID.canonicalize)
+            .first
+        else {
+            throw IngestMessageParserError
+                .missingMessageID
+        }
+
+        let from = IngestAddressProjector
+            .mailboxes(
+                in: parsedMessage,
+                headerName: "From"
+            )
+            .first
+
+        let to = IngestAddressProjector
+            .mailboxes(
+                in: parsedMessage,
+                headerName: "To"
+            )
+
+        let cc = IngestAddressProjector
+            .mailboxes(
+                in: parsedMessage,
+                headerName: "Cc"
+            )
+
+        let message = IngestMailMessage(
+            messageID: messageID,
+            subject:
+                parsedMessage.subject
+                ?? "(no subject)",
+            from: from,
+            to: to,
+            cc: cc,
+            date: parsedMessage.date?
+                .foundationDate,
+            inReplyTo: parsedMessage
+                .inReplyToIDs
+                .compactMap(
+                    LegacyMessageID.canonicalize
+                )
+                .first,
+            references: parsedMessage
+                .referenceIDs
+                .compactMap(
+                    LegacyMessageID.canonicalize
+                ),
+            textBody:
+                parsedMessage.bodyText(at: 0)
+                ?? ""
+        )
 
         return ParsedIngestMessage(
             message: message,
-            author: resolvedAuthor(for: message),
+            author: resolvedAuthor(
+                for: parsedMessage,
+                sender: from
+            ),
             patch: PatchSubjectParser.parse(
                 subject: message.subject,
                 body: message.textBody
@@ -60,18 +168,24 @@ struct IngestMessageParser: Sendable {
     }
 
     private func resolvedAuthor(
-        for message: MailMessage
-    ) -> Mailbox {
-        let sender = message.from ?? Mailbox(
+        for message: Message,
+        sender parsedSender: IngestMailbox?
+    ) -> IngestMailbox {
+        let sender = parsedSender ?? IngestMailbox(
             name: nil,
             address: "unknown@localhost"
         )
 
-        guard let originalValue = message.headers.firstValue(
-            named: "X-Original-From"
-        ),
-        let original = mailboxParser
-            .parseList(originalValue)
+        guard let original = message
+            .headerValues(
+                named: "X-Original-From"
+            )
+            .compactMap(
+                IngestAddressProjector.text
+            )
+            .flatMap(
+                IngestAddressProjector.parseList
+            )
             .first
         else {
             return sender
@@ -82,7 +196,7 @@ struct IngestMessageParser: Sendable {
             real: original.address
         ) ? original : sender
     }
-    
+
     private enum B4Alias {
         static func matches(
             alias: String,
@@ -128,6 +242,136 @@ struct IngestMessageParser: Sendable {
     }
 }
 
+enum IngestAddressProjector {
+    static func mailboxes(
+        in message: Message,
+        headerName: String
+    ) -> [IngestMailbox] {
+        message.headerValues(named: headerName)
+            .flatMap { value -> [IngestMailbox] in
+                guard case .address(let address) = value
+                else {
+                    return []
+                }
+
+                return mailboxes(in: address)
+            }
+    }
+
+    static func parseList(
+        _ value: String
+    ) -> [IngestMailbox] {
+        mailboxes(
+            in: AddressParser().parseList(value)
+        )
+    }
+
+    static func text(
+        from value: HeaderValue
+    ) -> String? {
+        switch value {
+        case .text(let text):
+            return text
+        case .textList(let values):
+            return values.first
+        default:
+            return nil
+        }
+    }
+
+    private static func mailboxes(
+        in address: Address
+    ) -> [IngestMailbox] {
+        address.flattened.compactMap(project)
+    }
+
+    private static func project(
+        _ mailbox: MailAddress
+    ) -> IngestMailbox? {
+        guard let address = mailbox.address?
+            .trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ),
+            let atIndex = address.lastIndex(of: "@"),
+            atIndex != address.startIndex,
+            address.index(after: atIndex)
+                != address.endIndex
+        else {
+            return nil
+        }
+
+        let name = mailbox.name?
+            .trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+
+        return IngestMailbox(
+            name: name?.isEmpty == false
+                ? name
+                : nil,
+            address: address
+        )
+    }
+}
+
+private enum LegacyMessageID {
+    static func canonicalize(
+        _ value: String
+    ) -> String? {
+        var result = ""
+        var commentDepth = 0
+        var isEscaped = false
+
+        for character in value {
+            if isEscaped {
+                if commentDepth == 0,
+                    !character.isWhitespace
+                {
+                    result.append(character)
+                }
+
+                isEscaped = false
+                continue
+            }
+
+            if character == "\\" {
+                if commentDepth == 0 {
+                    result.append(character)
+                }
+
+                isEscaped = true
+                continue
+            }
+
+            if character == "(" {
+                commentDepth += 1
+                continue
+            }
+
+            if character == ")",
+                commentDepth > 0
+            {
+                commentDepth -= 1
+                continue
+            }
+
+            if commentDepth == 0,
+                !character.isWhitespace
+            {
+                result.append(character)
+            }
+        }
+
+        guard commentDepth == 0,
+            !result.isEmpty
+        else {
+            return nil
+        }
+
+        return result
+    }
+}
+
 private enum PatchSubjectParser {
     static func parse(
         subject: String,
@@ -142,14 +386,14 @@ private enum PatchSubjectParser {
             .trimmingCharacters(
                 in: .whitespacesAndNewlines
             )
-        
+
         let hasDiff = body.contains("diff --git")
         || (
             body.contains("--- ")
             && body.contains("+++ ")
             && body.contains("@@ -")
         )
-        
+
         let isSeries = total > 1 || index == 0
         let isPatchOrCover =
         !isReply(
@@ -162,7 +406,7 @@ private enum PatchSubjectParser {
             || hasDiff
             || isSeries
         )
-        
+
         return ParsedPatchMetadata(
             partIndex: index,
             totalParts: max(1, total),
@@ -173,7 +417,7 @@ private enum PatchSubjectParser {
             : nil
         )
     }
-    
+
     private static func isReply(
         _ subject: String,
         lowerSubject: String
@@ -197,7 +441,7 @@ private enum PatchSubjectParser {
         || lowerSubject.contains("(was ")
         || lowerSubject.contains("(was:")
     }
-    
+
     private static func partPosition(
         in subject: String
     ) -> (Int32, Int32) {
@@ -232,7 +476,7 @@ private enum PatchSubjectParser {
 
         return (1, 1)
     }
-    
+
     private static func version(
         in subject: String
     ) -> Int32? {
@@ -269,7 +513,7 @@ private enum PatchSubjectParser {
 
         return nil
     }
-    
+
     private static func firstIntegerCaptures(
         pattern: String,
         in value: String,

@@ -8,7 +8,6 @@
 import Foundation
 import PostgresNIO
 import Vapor
-import MailParser
 
 enum PostgresIngestError:
     Error,
