@@ -73,6 +73,7 @@ body {
 }
 
 button,
+input,
 select {
   min-height: 32px;
   border: 1px solid var(--border);
@@ -88,11 +89,13 @@ button {
 }
 
 button:hover:not(:disabled),
+input:hover:not(:disabled),
 select:hover:not(:disabled) {
   background: var(--hover);
 }
 
 button:disabled,
+input:disabled,
 select:disabled {
   cursor: default;
   opacity: 0.5;
@@ -110,6 +113,7 @@ a:hover {
 
 a:focus-visible,
 button:focus-visible,
+input:focus-visible,
 select:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
@@ -170,6 +174,30 @@ p {
 .filter-control {
   max-width: 280px;
   padding: 4px 26px 4px 8px;
+}
+
+.search-form {
+  display: flex;
+  flex: 1;
+  gap: 6px;
+}
+
+.search-form input {
+  width: min(520px, 100%);
+  min-width: 180px;
+  padding: 5px 8px;
+}
+
+@media (max-width: 680px) {
+  .page-heading {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .search-form input {
+    flex: 1;
+  }
 }
 
 .thread-list,

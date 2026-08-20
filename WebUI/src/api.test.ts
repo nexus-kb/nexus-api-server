@@ -26,13 +26,19 @@ describe("API URL helpers", () => {
 
   it("preserves the thread cursor and filter scope", () => {
     const url = new URL(
-      threadListURL({ mailingList: "linux-kernel", cursor: "opaque+/=", limit: 25 }),
+      threadListURL({
+        mailingList: "linux-kernel",
+        q: 'RCU author:"Paul McKenney"',
+        cursor: "opaque+/=",
+        limit: 25,
+      }),
       "https://nexus.test",
     );
 
     expect(url.pathname).toBe("/api/v1/threads");
     expect(url.searchParams.get("limit")).toBe("25");
     expect(url.searchParams.get("mailingList")).toBe("linux-kernel");
+    expect(url.searchParams.get("q")).toBe('RCU author:"Paul McKenney"');
     expect(url.searchParams.get("cursor")).toBe("opaque+/=");
   });
 

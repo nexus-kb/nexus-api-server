@@ -6,6 +6,7 @@ struct ThreadListQuery: Decodable, Sendable {
     let mailingList: String?
     let subsystem: String?
     let kind: ThreadKind?
+    let q: String?
 }
 
 struct MessageListQuery: Decodable, Sendable {

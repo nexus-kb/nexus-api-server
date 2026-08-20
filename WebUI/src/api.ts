@@ -23,6 +23,7 @@ export class ApiError extends Error {
 
 export interface ThreadListParameters {
   mailingList?: string;
+  q?: string;
   cursor?: string;
   limit?: number;
 }
@@ -38,6 +39,7 @@ export function threadRoute(messageID: string): string {
 
 export function threadListURL({
   mailingList,
+  q,
   cursor,
   limit = 25,
 }: ThreadListParameters = {}): string {
@@ -45,6 +47,10 @@ export function threadListURL({
 
   if (mailingList) {
     query.set("mailingList", mailingList);
+  }
+
+  if (q) {
+    query.set("q", q);
   }
 
   if (cursor) {

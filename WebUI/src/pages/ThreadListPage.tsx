@@ -1,5 +1,5 @@
 import { A, useSearchParams } from "@solidjs/router";
-import { For, Show, createResource } from "solid-js";
+import { For, Show, createEffect, createResource, createSignal } from "solid-js";
 import { getMailingLists, getThreads, threadRoute } from "../api";
 import { absoluteDate, displayAuthor, displaySubject, plural, relativeDate } from "../format";
 import type {
@@ -69,18 +69,26 @@ function ThreadRow(props: { thread: ThreadSummary }) {
 
 export function ThreadListPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const [searchText, setSearchText] = createSignal("");
+
+  createEffect(() => {
+    setSearchText(firstParameter(searchParams.q) || "");
+  });
+
   const [mailingLists, { refetch: refetchMailingLists }] =
     createResource<MailingListResponse>(() => getMailingLists());
   const [threads, { refetch: refetchThreads }] = createResource<
     ThreadListResponse,
-    { mailingList?: string; cursor?: string }
+    { mailingList?: string; q?: string; cursor?: string }
   >(
     () => ({
       mailingList: firstParameter(searchParams.mailingList),
+      q: firstParameter(searchParams.q),
       cursor: firstParameter(searchParams.cursor),
     }),
     (parameters) => getThreads(parameters),
   );
+  const visibleThreads = () => (threads.error ? undefined : threads());
 
   const selectMailingList = (event: Event) => {
     const value = (event.currentTarget as HTMLSelectElement).value;
@@ -94,6 +102,23 @@ export function ThreadListPage() {
     if (cursor) {
       setSearchParams({ cursor });
     }
+  };
+
+  const submitSearch = (event: SubmitEvent) => {
+    event.preventDefault();
+    const q = searchText().trim();
+    setSearchParams({
+      q: q || undefined,
+      cursor: undefined,
+    });
+  };
+
+  const clearSearch = () => {
+    setSearchText("");
+    setSearchParams({
+      q: undefined,
+      cursor: undefined,
+    });
   };
 
   return (
@@ -113,6 +138,24 @@ export function ThreadListPage() {
             )}
           </For>
         </select>
+        <form class="search-form" onSubmit={submitSearch}>
+          <input
+            aria-label="Search threads"
+            maxlength={512}
+            onInput={(event) => setSearchText(event.currentTarget.value)}
+            placeholder='Subject, author:"name", date:YYYY-MM-DD'
+            type="search"
+            value={searchText()}
+          />
+          <button type="submit">Search</button>
+          <button
+            disabled={!searchText() && !firstParameter(searchParams.q)}
+            onClick={clearSearch}
+            type="button"
+          >
+            Clear
+          </button>
+        </form>
       </div>
 
       <Show when={mailingLists.error}>
@@ -147,12 +190,12 @@ export function ThreadListPage() {
         </div>
       </Show>
 
-      <Show when={threads()}>
+      <Show when={visibleThreads()}>
         {(page) => (
           <>
             <Show
               when={page().items.length > 0}
-              fallback={<p class="empty-state">No threads match this mailing list.</p>}
+              fallback={<p class="empty-state">No threads match these filters.</p>}
             >
               <ol class="thread-list" aria-live="polite" aria-busy={threads.loading}>
                 <For each={page().items}>{(thread) => <ThreadRow thread={thread} />}</For>

@@ -85,13 +85,17 @@ struct ThreadController {
                 limit: limit,
                 maximum: 100
             )
+            let search = try resolveSearch(
+                query.q
+            )
 
             return (
                 ThreadPageScope(
                     limit: limit,
                     mailingList: query.mailingList,
                     subsystem: query.subsystem,
-                    kind: query.kind
+                    kind: query.kind,
+                    search: search
                 ),
                 nil
             )
@@ -113,6 +117,9 @@ struct ThreadController {
             limit: cursor.scope.limit,
             maximum: 100
         )
+        let requestedSearch = try resolveSearch(
+            query.q
+        )
 
         guard query.limit == nil
                 || query.limit == cursor.scope.limit,
@@ -123,7 +130,10 @@ struct ThreadController {
                 || query.subsystem
                     == cursor.scope.subsystem,
               query.kind == nil
-                || query.kind == cursor.scope.kind
+                || query.kind == cursor.scope.kind,
+              query.q == nil
+                || requestedSearch
+                    == cursor.scope.search
         else {
             throw Abort(
                 .badRequest,
@@ -133,6 +143,21 @@ struct ThreadController {
         }
 
         return (cursor.scope, cursor)
+    }
+
+    private func resolveSearch(
+        _ query: String?
+    ) throws -> ThreadSearch? {
+        do {
+            return try ThreadSearchParser.parse(
+                query
+            )
+        } catch let error as ThreadSearchParseError {
+            throw Abort(
+                .badRequest,
+                reason: error.description
+            )
+        }
     }
 
     private func resolveMessagePage(

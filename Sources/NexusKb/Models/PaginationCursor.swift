@@ -27,6 +27,7 @@ struct ThreadPageScope:
     let mailingList: String?
     let subsystem: String?
     let kind: ThreadKind?
+    let search: ThreadSearch?
 }
 
 struct ThreadCursor:

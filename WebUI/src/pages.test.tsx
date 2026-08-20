@@ -46,7 +46,7 @@ afterEach(() => {
 });
 
 describe("ThreadListPage", () => {
-  it("filters by mailing list, resets the cursor, and paginates", async () => {
+  it("filters, searches, clears search, resets the cursor, and paginates", async () => {
     window.location.hash = "#/?cursor=old-cursor";
     const firstPage: ThreadListResponse = {
       items: [thread],
@@ -62,6 +62,14 @@ describe("ThreadListPage", () => {
               { name: "Netdev", archiveGroup: "netdev" },
             ],
           }),
+        );
+      }
+      if (url.includes("q=date%3A2026-02-30")) {
+        return Promise.resolve(
+          jsonResponse(
+            { error: true, reason: "Invalid search date: 2026-02-30" },
+            400,
+          ),
         );
       }
       return Promise.resolve(jsonResponse(firstPage));
@@ -92,13 +100,47 @@ describe("ThreadListPage", () => {
       expect(window.location.hash).not.toContain("old-cursor");
     });
 
+    await userEvent.type(
+      screen.getByRole("searchbox", { name: "Search threads" }),
+      'RCU author:"Paul McKenney"',
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() => {
+      expect(window.location.hash).toContain(
+        "q=RCU+author%3A%22Paul+McKenney%22",
+      );
+      expect(window.location.hash).not.toContain("cursor=");
+    });
+
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
     await waitFor(() => expect(window.location.hash).toContain("cursor=next-cursor"));
+
+    await userEvent.click(screen.getByRole("button", { name: "Clear" }));
+    await waitFor(() => {
+      expect(window.location.hash).not.toContain("q=");
+      expect(window.location.hash).not.toContain("cursor=");
+    });
+    expect(screen.getByRole("searchbox", { name: "Search threads" })).toHaveValue("");
+
+    await userEvent.type(
+      screen.getByRole("searchbox", { name: "Search threads" }),
+      "date:2026-02-30",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(
+      await screen.findByRole("alert"),
+    ).toHaveTextContent("Invalid search date: 2026-02-30");
 
     const threadRequests = fetchMock.mock.calls
       .map(([input]) => String(input))
       .filter((url) => url.startsWith("/api/v1/threads?"));
     expect(threadRequests.some((url) => url.includes("mailingList=netdev"))).toBe(true);
+    expect(
+      threadRequests.some((url) =>
+        url.includes("q=RCU+author%3A%22Paul+McKenney%22"),
+      ),
+    ).toBe(true);
   });
 });
 
