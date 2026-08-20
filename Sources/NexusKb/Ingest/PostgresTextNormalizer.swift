@@ -17,6 +17,10 @@ enum PostgresTextNormalizer {
             message: normalize(
                 parsed.message
             ),
+            messageIDAliases:
+                parsed.messageIDAliases.map {
+                    normalize($0)
+                },
             author: normalize(
                 parsed.author
             ),

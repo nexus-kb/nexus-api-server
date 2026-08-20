@@ -58,8 +58,21 @@ struct IngestMailMessage:
 
 struct ParsedIngestMessage: Sendable, Equatable {
     let message: IngestMailMessage
+    let messageIDAliases: [String]
     let author: IngestMailbox
     let patch: ParsedPatchMetadata
+
+    init(
+        message: IngestMailMessage,
+        messageIDAliases: [String] = [],
+        author: IngestMailbox,
+        patch: ParsedPatchMetadata
+    ) {
+        self.message = message
+        self.messageIDAliases = messageIDAliases
+        self.author = author
+        self.patch = patch
+    }
 
     var authorDisplayString: String {
         author.displayString
@@ -100,14 +113,22 @@ struct IngestMessageParser: Sendable {
                 .unparseableMessage
         }
 
-        guard let messageID = parsedMessage
+        let messageIDs = parsedMessage
             .messageIDs
             .compactMap(LegacyMessageID.canonicalize)
-            .first
+
+        guard let messageID = messageIDs.last
         else {
             throw IngestMessageParserError
                 .missingMessageID
         }
+
+        var seenMessageIDs = Set([messageID])
+        let messageIDAliases = messageIDs
+            .dropLast()
+            .filter {
+                seenMessageIDs.insert($0).inserted
+            }
 
         let from = IngestAddressProjector
             .mailboxes(
@@ -156,6 +177,8 @@ struct IngestMessageParser: Sendable {
 
         return ParsedIngestMessage(
             message: message,
+            messageIDAliases:
+                Array(messageIDAliases),
             author: resolvedAuthor(
                 for: parsedMessage,
                 sender: from

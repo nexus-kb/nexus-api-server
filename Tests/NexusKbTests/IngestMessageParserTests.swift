@@ -64,7 +64,7 @@ func canonicalizesLegacyThreadIdentifiersForIngest() throws {
 }
 
 @Test
-func selectsTheFirstUsableMessageIDAcrossListsAndRepeatedHeaders() throws {
+func selectsTheLastUsableMessageIDAcrossListsAndRepeatedHeaders() throws {
     let raw = Data(
         """
         Message-ID: <> <first @example.com> <second@example.com>
@@ -76,7 +76,13 @@ func selectsTheFirstUsableMessageIDAcrossListsAndRepeatedHeaders() throws {
 
     let parsed = try IngestMessageParser().parse(raw)
 
-    #expect(parsed.message.messageID == "first@example.com")
+    #expect(parsed.message.messageID == "last@example.com")
+    #expect(
+        parsed.messageIDAliases == [
+            "first@example.com",
+            "second@example.com",
+        ]
+    )
 }
 
 @Test

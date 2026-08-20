@@ -450,6 +450,22 @@ private struct TestMessageState {
     let isPlaceholder: Bool
 }
 
+private struct TestStoredMessage {
+    let threadID: Int64
+    let inReplyTo: String?
+    let references: [String]
+    let subject: String
+}
+
+private struct TestPatchSetState {
+    let id: Int64
+    let threadID: Int64
+    let coverLetterMessageID: String?
+    let totalParts: Int32
+    let receivedParts: Int32
+    let status: String
+}
+
 private struct TestThreadMetadata {
     let subject: String?
     let lastUpdatedAt: Date
@@ -493,12 +509,15 @@ private final class DatabaseFixture {
     func message(
         number: Int,
         messageID: String? = nil,
+        additionalMessageIDs: [String] = [],
         inReplyTo: String? = nil,
+        references: [String] = [],
         to: [String] = [],
         cc: [String] = [],
         subject: String? = nil,
         dateHeader: String =
             "Tue, 18 Aug 2026 12:00:00 -0400",
+        body: String? = nil,
         invalidPatchIndex: Bool = false
     ) throws -> PreparedPublicInboxMessage {
         let resolvedMessageID =
@@ -522,6 +541,15 @@ private final class DatabaseFixture {
             )
         }
 
+        if !references.isEmpty {
+            headerLines.append(
+                "References: "
+                + references.map {
+                    "<\($0)>"
+                }.joined(separator: " ")
+            )
+        }
+
         if !to.isEmpty {
             headerLines.append(
                 "To: \(to.joined(separator: ", "))"
@@ -534,12 +562,23 @@ private final class DatabaseFixture {
             )
         }
 
+        for additionalMessageID
+            in additionalMessageIDs
+        {
+            headerLines.append(
+                "Message-ID: <\(additionalMessageID)>"
+            )
+        }
+
         let rawMessage =
             headerLines.joined(
                 separator: "\r\n"
             )
             + "\r\n\r\n"
-            + "Test body \(number)\r\n"
+            + (
+                body
+                ?? "Test body \(number)\r\n"
+            )
 
         let parsed = try IngestMessageParser()
             .parse(
@@ -801,6 +840,115 @@ private final class DatabaseFixture {
         }
 
         return nil
+    }
+
+    func storedMessage(
+        messageID: String
+    ) async throws -> TestStoredMessage? {
+        let rows = try await app.postgres.query(
+            """
+            SELECT
+                thread_id,
+                in_reply_to,
+                references_ids,
+                subject
+            FROM messages
+            WHERE message_id = \(messageID)
+            """,
+            logger: app.logger
+        )
+
+        for try await row in rows {
+            let value = try row.decode(
+                (
+                    Int64,
+                    String?,
+                    [String],
+                    String
+                ).self
+            )
+
+            return TestStoredMessage(
+                threadID: value.0,
+                inReplyTo: value.1,
+                references: value.2,
+                subject: value.3
+            )
+        }
+
+        return nil
+    }
+
+    func patchSetState(
+        messageID: String
+    ) async throws -> TestPatchSetState? {
+        let rows = try await app.postgres.query(
+            """
+            SELECT DISTINCT
+                patchset.id,
+                patchset.thread_id,
+                patchset.cover_letter_message_id,
+                patchset.total_parts,
+                patchset.received_parts,
+                patchset.status
+            FROM patchsets AS patchset
+            LEFT JOIN patches AS patch
+              ON patch.patchset_id = patchset.id
+            WHERE patchset.cover_letter_message_id =
+                    \(messageID)
+               OR patch.message_id = \(messageID)
+            """,
+            logger: app.logger
+        )
+
+        for try await row in rows {
+            let value = try row.decode(
+                (
+                    Int64,
+                    Int64,
+                    String?,
+                    Int32,
+                    Int32,
+                    String
+                ).self
+            )
+
+            return TestPatchSetState(
+                id: value.0,
+                threadID: value.1,
+                coverLetterMessageID:
+                    value.2,
+                totalParts: value.3,
+                receivedParts: value.4,
+                status: value.5
+            )
+        }
+
+        return nil
+    }
+
+    func patchMessageIDs(
+        patchSetID: Int64
+    ) async throws -> [String] {
+        let rows = try await app.postgres.query(
+            """
+            SELECT message_id
+            FROM patches
+            WHERE patchset_id = \(patchSetID)
+            ORDER BY part_index
+            """,
+            logger: app.logger
+        )
+
+        var messageIDs: [String] = []
+
+        for try await row in rows {
+            messageIDs.append(
+                try row.decode(String.self)
+            )
+        }
+
+        return messageIDs
     }
 
     func mailingListBlobOID(
@@ -1191,6 +1339,293 @@ func resolvesPlaceholderInBatch() async throws {
             #expect(
                 try await fixture.threadCount()
                     == 1
+            )
+        } catch {
+            try? await fixture.remove()
+            throw error
+        }
+
+        try await fixture.remove()
+    }
+}
+
+@Test(
+    "Trailing Message-IDs remap a series without changing the old series"
+)
+func remapsPublicInboxDuplicateMessageIDs() async throws {
+    try await withApp(
+        configure: configure
+    ) { app in
+        let fixture = try await DatabaseFixture(
+            app: app
+        )
+
+        do {
+            let oldCoverMessageID =
+                "\(fixture.prefix)-old-cover@example.com"
+            let oldPartOneMessageID =
+                "\(fixture.prefix)-old-part-1@example.com"
+            let oldPartTwoMessageID =
+                "\(fixture.prefix)-old-part-2@example.com"
+            let reusedCoverMessageID =
+                "\(fixture.prefix)-reused-cover@example.com"
+            let reusedPartOneMessageID =
+                "\(fixture.prefix)-reused-part-1@example.com"
+
+            let patchBody =
+                """
+                diff --git a/file b/file
+                --- a/file
+                +++ b/file
+                @@ -1 +1 @@
+                -old
+                +new
+                """
+
+            let oldCover = try fixture.message(
+                number: 1,
+                messageID: oldCoverMessageID,
+                subject: "[PATCH net 0/4] old series",
+                dateHeader:
+                    "Tue, 21 Jan 2020 12:40:27 +0000"
+            )
+            let oldPartOne = try fixture.message(
+                number: 2,
+                messageID: oldPartOneMessageID,
+                inReplyTo: oldCoverMessageID,
+                subject: "[PATCH net 1/4] old part one",
+                dateHeader:
+                    "Tue, 21 Jan 2020 12:40:28 +0000",
+                body: patchBody
+            )
+            let oldPartTwo = try fixture.message(
+                number: 3,
+                messageID: oldPartTwoMessageID,
+                inReplyTo: oldCoverMessageID,
+                subject: "[PATCH net 2/4] old part two",
+                dateHeader:
+                    "Tue, 21 Jan 2020 12:40:29 +0000",
+                body: patchBody
+            )
+            let oldPartThree = try fixture.message(
+                number: 4,
+                messageID: reusedCoverMessageID,
+                inReplyTo: oldCoverMessageID,
+                subject: "[PATCH net 3/4] old part three",
+                dateHeader:
+                    "Tue, 21 Jan 2020 12:40:30 +0000",
+                body: patchBody
+            )
+            let oldPartFour = try fixture.message(
+                number: 5,
+                messageID: reusedPartOneMessageID,
+                inReplyTo: oldCoverMessageID,
+                subject: "[PATCH net 4/4] old part four",
+                dateHeader:
+                    "Tue, 21 Jan 2020 12:40:31 +0000",
+                body: patchBody
+            )
+
+            let service = PostgresIngestService(
+                client: app.postgres
+            )
+
+            _ = try await service.ingestBatch(
+                [
+                    oldCover,
+                    oldPartOne,
+                    oldPartTwo,
+                    oldPartThree,
+                    oldPartFour,
+                ],
+                mailingListID:
+                    fixture.mailingListID,
+                epoch: fixture.epoch,
+                expectedPreviousCommitOID: nil,
+                logger: app.logger
+            )
+
+            let newCoverMessageID =
+                "\(fixture.prefix)-20210219090439@z"
+            let newPartOneMessageID =
+                "\(fixture.prefix)-20210219090440@z"
+            let newPartTwoMessageID =
+                "\(fixture.prefix)-20210219090441@z"
+            let newPartThreeMessageID =
+                "\(fixture.prefix)-20210219090442@z"
+            let newPartFourMessageID =
+                "\(fixture.prefix)-20210219090443@z"
+
+            let newPartOne = try fixture.message(
+                number: 10,
+                messageID: reusedPartOneMessageID,
+                additionalMessageIDs: [
+                    newPartOneMessageID
+                ],
+                inReplyTo: reusedCoverMessageID,
+                references: [reusedCoverMessageID],
+                subject: "[PATCH net-next 1/4] new part one",
+                dateHeader:
+                    "Fri, 19 Feb 2021 09:04:40 +0000",
+                body: patchBody
+            )
+            let newPartTwo = try fixture.message(
+                number: 11,
+                messageID:
+                    "\(fixture.prefix)-reused-part-2@example.com",
+                additionalMessageIDs: [
+                    newPartTwoMessageID
+                ],
+                inReplyTo: reusedCoverMessageID,
+                references: [reusedCoverMessageID],
+                subject: "[PATCH net-next 2/4] new part two",
+                dateHeader:
+                    "Fri, 19 Feb 2021 09:04:41 +0000",
+                body: patchBody
+            )
+            let newPartThree = try fixture.message(
+                number: 12,
+                messageID:
+                    "\(fixture.prefix)-reused-part-3@example.com",
+                additionalMessageIDs: [
+                    newPartThreeMessageID
+                ],
+                inReplyTo: reusedCoverMessageID,
+                references: [reusedCoverMessageID],
+                subject: "[PATCH net-next 3/4] new part three",
+                dateHeader:
+                    "Fri, 19 Feb 2021 09:04:42 +0000",
+                body: patchBody
+            )
+            let newPartFour = try fixture.message(
+                number: 13,
+                messageID:
+                    "\(fixture.prefix)-reused-part-4@example.com",
+                additionalMessageIDs: [
+                    newPartFourMessageID
+                ],
+                inReplyTo: reusedCoverMessageID,
+                references: [reusedCoverMessageID],
+                subject: "[PATCH net-next 4/4] new part four",
+                dateHeader:
+                    "Fri, 19 Feb 2021 09:04:43 +0000",
+                body: patchBody
+            )
+            let newCover = try fixture.message(
+                number: 14,
+                messageID: reusedCoverMessageID,
+                additionalMessageIDs: [
+                    newCoverMessageID
+                ],
+                subject:
+                    "[PATCH net-next 0/4] new series",
+                dateHeader:
+                    "Fri, 19 Feb 2021 09:04:39 +0000"
+            )
+
+            _ = try await service.ingestBatch(
+                [
+                    newPartOne,
+                    newPartTwo,
+                    newPartThree,
+                    newPartFour,
+                    newCover,
+                ],
+                mailingListID:
+                    fixture.mailingListID,
+                epoch: fixture.epoch,
+                expectedPreviousCommitOID:
+                    oldPartFour.commitOID,
+                logger: app.logger
+            )
+
+            let oldPatchSet = try #require(
+                try await fixture.patchSetState(
+                    messageID: oldCoverMessageID
+                )
+            )
+            let newPatchSet = try #require(
+                try await fixture.patchSetState(
+                    messageID: newCoverMessageID
+                )
+            )
+
+            #expect(oldPatchSet.id != newPatchSet.id)
+            #expect(
+                oldPatchSet.threadID
+                    != newPatchSet.threadID
+            )
+            #expect(oldPatchSet.totalParts == 4)
+            #expect(oldPatchSet.receivedParts == 4)
+            #expect(oldPatchSet.status == "Complete")
+            #expect(newPatchSet.totalParts == 4)
+            #expect(newPatchSet.receivedParts == 4)
+            #expect(newPatchSet.status == "Complete")
+            #expect(
+                newPatchSet.coverLetterMessageID
+                    == newCoverMessageID
+            )
+
+            #expect(
+                try await fixture.patchMessageIDs(
+                    patchSetID: oldPatchSet.id
+                ) == [
+                    oldPartOneMessageID,
+                    oldPartTwoMessageID,
+                    reusedCoverMessageID,
+                    reusedPartOneMessageID,
+                ]
+            )
+            #expect(
+                try await fixture.patchMessageIDs(
+                    patchSetID: newPatchSet.id
+                ) == [
+                    newPartOneMessageID,
+                    newPartTwoMessageID,
+                    newPartThreeMessageID,
+                    newPartFourMessageID,
+                ]
+            )
+
+            let storedNewPartOne = try #require(
+                try await fixture.storedMessage(
+                    messageID: newPartOneMessageID
+                )
+            )
+            let storedNewCover = try #require(
+                try await fixture.storedMessage(
+                    messageID: newCoverMessageID
+                )
+            )
+            let storedOldPartFour = try #require(
+                try await fixture.storedMessage(
+                    messageID: reusedPartOneMessageID
+                )
+            )
+
+            #expect(
+                storedNewPartOne.inReplyTo
+                    == newCoverMessageID
+            )
+            #expect(
+                storedNewPartOne.references
+                    == [newCoverMessageID]
+            )
+            #expect(
+                storedNewPartOne.threadID
+                    == storedNewCover.threadID
+            )
+            #expect(
+                storedOldPartFour.subject
+                    == "[PATCH net 4/4] old part four"
+            )
+            #expect(
+                storedOldPartFour.threadID
+                    == oldPatchSet.threadID
+            )
+            #expect(
+                try await fixture.cursor()
+                    == newCover.commitOID
             )
         } catch {
             try? await fixture.remove()

@@ -227,14 +227,16 @@ struct PostgresIngestService: Sendable {
             }
         }
 
-        let normalized = messages.map {
-            NormalizedPublicInboxMessage(
-                blobOID: $0.blobOID,
-                parsed:
-                    PostgresTextNormalizer
-                    .normalize($0.parsed)
-            )
-        }
+        let normalized = remappingThreadIdentifiers(
+            in: messages.map {
+                NormalizedPublicInboxMessage(
+                    blobOID: $0.blobOID,
+                    parsed:
+                        PostgresTextNormalizer
+                        .normalize($0.parsed)
+                )
+            }
+        )
 
         return try await client.withTransaction(
             logger: logger
@@ -381,6 +383,94 @@ struct PostgresIngestService: Sendable {
 
             return results
         }
+    }
+
+    private func remappingThreadIdentifiers(
+        in messages:
+            [NormalizedPublicInboxMessage]
+    ) -> [NormalizedPublicInboxMessage] {
+        let canonicalMessageIDs = Set(
+            messages.map {
+                $0.parsed.message.messageID
+            }
+        )
+
+        var canonicalIDsByAlias:
+            [String: Set<String>] = [:]
+
+        for message in messages {
+            let canonicalMessageID =
+                message.parsed.message.messageID
+
+            for alias
+                in message.parsed.messageIDAliases
+                where alias != canonicalMessageID
+                    && !canonicalMessageIDs
+                        .contains(alias)
+            {
+                canonicalIDsByAlias[
+                    alias,
+                    default: []
+                ].insert(canonicalMessageID)
+            }
+        }
+
+        let canonicalIDByAlias =
+            canonicalIDsByAlias.compactMapValues {
+                candidates -> String? in
+
+                guard candidates.count == 1
+                else {
+                    return nil
+                }
+
+                return candidates.first
+            }
+
+        guard !canonicalIDByAlias.isEmpty
+        else {
+            return messages
+        }
+
+        return messages.map { message in
+            NormalizedPublicInboxMessage(
+                blobOID: message.blobOID,
+                parsed: remappingThreadIdentifiers(
+                    in: message.parsed,
+                    using: canonicalIDByAlias
+                )
+            )
+        }
+    }
+
+    private func remappingThreadIdentifiers(
+        in parsed: ParsedIngestMessage,
+        using canonicalIDByAlias:
+            [String: String]
+    ) -> ParsedIngestMessage {
+        let message = parsed.message
+
+        return ParsedIngestMessage(
+            message: IngestMailMessage(
+                messageID: message.messageID,
+                subject: message.subject,
+                from: message.from,
+                to: message.to,
+                cc: message.cc,
+                date: message.date,
+                inReplyTo: message.inReplyTo.map {
+                    canonicalIDByAlias[$0] ?? $0
+                },
+                references: message.references.map {
+                    canonicalIDByAlias[$0] ?? $0
+                },
+                textBody: message.textBody
+            ),
+            messageIDAliases:
+                parsed.messageIDAliases,
+            author: parsed.author,
+            patch: parsed.patch
+        )
     }
 
     private func ensureEpoch(
