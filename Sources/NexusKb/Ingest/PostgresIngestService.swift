@@ -53,12 +53,18 @@ enum PreparedPublicInboxArchiveEntry:
         commitOID: String,
         blobOID: String
     )
+    case skipped(
+        commitOID: String,
+        blobOID: String
+    )
 
     var commitOID: String {
         switch self {
         case .message(let message):
             message.commitOID
         case .deletion(let commitOID, _):
+            commitOID
+        case .skipped(let commitOID, _):
             commitOID
         }
     }
@@ -224,6 +230,8 @@ struct PostgresIngestService: Sendable {
                 )
             case .deletion(_, let blobOID):
                 finalDeletionBlobOIDs.insert(blobOID)
+            case .skipped:
+                break
             }
         }
 

@@ -56,6 +56,117 @@ struct PublicInboxIngestBatchTests {
         }
     }
 
+    @Test("Skipped entry advances the cursor without persistence")
+    func skippedEntryAdvancesCursor() async throws {
+        try await withApp(
+            configure: configure
+        ) { app in
+            let fixture = try await DatabaseFixture(
+                app: app
+            )
+
+            do {
+                let skippedCommitOID = String(
+                    repeating: "a",
+                    count: 40
+                )
+                let results = try await PostgresIngestService(
+                    client: app.postgres
+                ).ingestBatch(
+                    [
+                        .skipped(
+                            commitOID: skippedCommitOID,
+                            blobOID: String(
+                                repeating: "b",
+                                count: 40
+                            )
+                        )
+                    ],
+                    mailingListID:
+                        fixture.mailingListID,
+                    epoch: fixture.epoch,
+                    expectedPreviousCommitOID: nil,
+                    logger: app.logger
+                )
+
+                #expect(results.isEmpty)
+                #expect(
+                    try await fixture.cursor()
+                        == skippedCommitOID
+                )
+                #expect(
+                    try await fixture.messageCount()
+                        == 0
+                )
+            } catch {
+                try? await fixture.remove()
+                throw error
+            }
+
+            try await fixture.remove()
+        }
+    }
+
+    @Test("Reply to a skipped message creates a placeholder")
+    func replyToSkippedMessageCreatesPlaceholder()
+        async throws
+    {
+        try await withApp(
+            configure: configure
+        ) { app in
+            let fixture = try await DatabaseFixture(
+                app: app
+            )
+
+            do {
+                let missingMessageID =
+                    "missing-root@example.com"
+                let reply = try fixture.message(
+                    number: 1,
+                    inReplyTo: missingMessageID
+                )
+                let results = try await PostgresIngestService(
+                    client: app.postgres
+                ).ingestBatch(
+                    [
+                        .skipped(
+                            commitOID: String(
+                                repeating: "c",
+                                count: 40
+                            ),
+                            blobOID: String(
+                                repeating: "d",
+                                count: 40
+                            )
+                        ),
+                        .message(reply),
+                    ],
+                    mailingListID:
+                        fixture.mailingListID,
+                    epoch: fixture.epoch,
+                    expectedPreviousCommitOID: nil,
+                    logger: app.logger
+                )
+
+                #expect(results.count == 1)
+                #expect(
+                    try await fixture.messageState(
+                        messageID: missingMessageID
+                    )?.isPlaceholder == true
+                )
+                #expect(
+                    try await fixture.cursor()
+                        == reply.commitOID
+                )
+            } catch {
+                try? await fixture.remove()
+                throw error
+            }
+
+            try await fixture.remove()
+        }
+    }
+
     @Test("Failure rolls back every message and cursor")
     func rollsBackBatch() async throws {
         try await withApp(

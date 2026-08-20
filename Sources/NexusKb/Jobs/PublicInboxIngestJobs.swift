@@ -245,6 +245,56 @@ struct IngestPublicInboxEpochJob: AsyncJob {
         )
     }
 
+    static func prepare(
+        _ entry: PublicInboxArchiveEntry,
+        parser: IngestMessageParser =
+            IngestMessageParser()
+    ) throws -> PreparedPublicInboxArchiveEntry {
+        switch entry {
+        case .deletion(
+            let commitOID,
+            let blobOID
+        ):
+            return .deletion(
+                commitOID: commitOID,
+                blobOID: blobOID
+            )
+
+        case .message(let message):
+            do {
+                return .message(
+                    PreparedPublicInboxMessage(
+                        commitOID:
+                            message.commitOID,
+                        blobOID:
+                            message.blobOID,
+                        parsed: try parser.parse(
+                            message.rawMessage
+                        )
+                    )
+                )
+            } catch IngestMessageParserError
+                .missingMessageID
+            {
+                return .skipped(
+                    commitOID: message.commitOID,
+                    blobOID: message.blobOID
+                )
+            } catch {
+                throw PublicInboxIngestJobError
+                    .messageParseFailed(
+                        commitOID:
+                            message.commitOID,
+                        blobOID:
+                            message.blobOID,
+                        error: String(
+                            reflecting: error
+                        )
+                    )
+            }
+        }
+    }
+
     func dequeue(
         _ context: QueueContext,
         _ payload: Payload
@@ -375,56 +425,35 @@ struct IngestPublicInboxEpochJob: AsyncJob {
                                     commitOIDs
                             )
                             .map { entry in
-                                switch entry {
-                                case .deletion(
-                                    let commitOID,
-                                    let blobOID
-                                ):
-                                    return
-                                        PreparedPublicInboxArchiveEntry
-                                        .deletion(
-                                            commitOID:
-                                                commitOID,
-                                            blobOID:
-                                                blobOID
-                                        )
-
-                                case .message(
-                                    let message
-                                ):
-                                    do {
-                                        return
-                                            PreparedPublicInboxArchiveEntry
-                                            .message(
-                                                PreparedPublicInboxMessage(
-                                                    commitOID:
-                                                        message.commitOID,
-                                                    blobOID:
-                                                        message.blobOID,
-                                                    parsed:
-                                                        try parser.parse(
-                                                            message.rawMessage
-                                                        )
-                                                )
-                                            )
-                                    } catch {
-                                        throw
-                                            PublicInboxIngestJobError
-                                            .messageParseFailed(
-                                                commitOID:
-                                                    message.commitOID,
-                                                blobOID:
-                                                    message.blobOID,
-                                                error:
-                                                    String(
-                                                        reflecting:
-                                                            error
-                                                    )
-                                            )
-                                    }
-                                }
+                                try Self.prepare(
+                                    entry,
+                                    parser: parser
+                                )
                             }
                     }
+
+                for entry in entries {
+                    guard case .skipped(
+                        let commitOID,
+                        let blobOID
+                    ) = entry else {
+                        continue
+                    }
+
+                    context.logger.warning(
+                        "Skipped public-inbox message without a Message-ID",
+                        metadata: [
+                            "mailing-list-id":
+                                "\(payload.mailingListID)",
+                            "epoch":
+                                "\(payload.target.epoch)",
+                            "commit-oid":
+                                "\(commitOID)",
+                            "blob-oid":
+                                "\(blobOID)",
+                        ]
+                    )
+                }
 
                 try await lease.assertOwned()
 
@@ -442,18 +471,24 @@ struct IngestPublicInboxEpochJob: AsyncJob {
                     entries.last?.commitOID
                     ?? expectedCursor
 
-                let messageCount = entries.reduce(
-                    into: 0
-                ) { count, entry in
-                    if case .message = entry {
-                        count += 1
+                let counts = entries.reduce(
+                    into: (
+                        messages: 0,
+                        deletions: 0,
+                        skipped: 0
+                    )
+                ) { counts, entry in
+                    switch entry {
+                    case .message:
+                        counts.messages += 1
+                    case .deletion:
+                        counts.deletions += 1
+                    case .skipped:
+                        counts.skipped += 1
                     }
                 }
 
-                let deletionCount =
-                    entries.count - messageCount
-
-                processedCount += messageCount
+                processedCount += counts.messages
 
                 context.logger.info(
                     "Ingested public-inbox database batch",
@@ -463,9 +498,11 @@ struct IngestPublicInboxEpochJob: AsyncJob {
                         "epoch":
                             "\(payload.target.epoch)",
                         "message-count":
-                            "\(messageCount)",
+                            "\(counts.messages)",
                         "deletion-count":
-                            "\(deletionCount)",
+                            "\(counts.deletions)",
+                        "skipped-count":
+                            "\(counts.skipped)",
                         "scanned-commit-count":
                             "\(entries.count)",
                         "total-message-count":
