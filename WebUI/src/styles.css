@@ -152,12 +152,10 @@ p {
 .page-heading {
   display: flex;
   align-items: flex-end;
-  justify-content: space-between;
   gap: 16px;
   margin-bottom: 10px;
 }
 
-.page-heading h1,
 .thread-heading h1 {
   margin-bottom: 3px;
   font-size: 1.2rem;
@@ -170,14 +168,6 @@ p {
 }
 
 .filter-control {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-
-.filter-control select {
   max-width: 280px;
   padding: 4px 26px 4px 8px;
 }
@@ -235,9 +225,20 @@ p {
 
 .thread-meta > span:not(:last-child)::after,
 .thread-detail-meta > span:not(:last-child)::after {
-  margin-left: 10px;
+  position: absolute;
+  left: calc(100% + 8px);
   color: var(--text-dim);
   content: "·";
+}
+
+.thread-meta,
+.thread-detail-meta {
+  column-gap: 20px;
+}
+
+.thread-meta > span,
+.thread-detail-meta > span {
+  position: relative;
 }
 
 .kind-badge,
@@ -278,8 +279,7 @@ p {
 .pagination {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 12px;
+  justify-content: space-between;
   margin-top: 12px;
   color: var(--text-muted);
 }
@@ -538,12 +538,6 @@ button.message-summary:hover:not(:disabled) {
   }
 
   .filter-control {
-    width: 100%;
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .filter-control select {
     width: 100%;
     max-width: none;
   }

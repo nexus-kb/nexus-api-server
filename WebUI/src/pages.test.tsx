@@ -1,5 +1,5 @@
 import { HashRouter, Route } from "@solidjs/router";
-import { cleanup, render, screen, waitFor } from "@solidjs/testing-library";
+import { cleanup, render, screen, waitFor, within } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ThreadListPage } from "./pages/ThreadListPage";
@@ -20,7 +20,7 @@ const thread: ThreadDetail = {
   messageCount: 3,
   missingMessageCount: 1,
   kind: "patch-series",
-  mailingLists: [{ name: "Linux Kernel", archiveGroup: "linux-kernel" }],
+  mailingLists: [{ name: "Linux Kernel Mailing List", archiveGroup: "lkml" }],
   subsystems: [{ name: "Networking", mailingListAddress: "netdev@example.com" }],
   patchSeries: [
     {
@@ -58,7 +58,7 @@ describe("ThreadListPage", () => {
         return Promise.resolve(
           jsonResponse({
             items: [
-              { name: "Linux Kernel", archiveGroup: "linux-kernel" },
+              { name: "Linux Kernel Mailing List", archiveGroup: "lkml" },
               { name: "Netdev", archiveGroup: "netdev" },
             ],
           }),
@@ -75,6 +75,16 @@ describe("ThreadListPage", () => {
     ));
 
     expect(await screen.findByText("[PATCH] net: repair the packet path")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Threads" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Mailing list")).not.toBeInTheDocument();
+    expect(screen.queryByText("1 thread")).not.toBeInTheDocument();
+    expect(screen.getByText(/^created /)).toHaveAttribute("title");
+    expect(screen.getByText(/^updated /)).toHaveAttribute("title");
+    expect(within(screen.getByRole("list")).getByText("lkml")).toHaveAttribute(
+      "title",
+      "Linux Kernel Mailing List",
+    );
+    expect(screen.getByRole("option", { name: "lkml" })).toBeInTheDocument();
     await userEvent.selectOptions(screen.getByLabelText("Filter by mailing list"), "netdev");
 
     await waitFor(() => {

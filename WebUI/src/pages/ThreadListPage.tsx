@@ -43,12 +43,21 @@ function ThreadRow(props: { thread: ThreadSummary }) {
       </div>
       <div class="thread-meta">
         <span>{displayAuthor(thread().author)}</span>
+        <Show when={thread().startedAt}>
+          {(startedAt) => (
+            <span title={absoluteDate(startedAt())}>created {relativeDate(startedAt())}</span>
+          )}
+        </Show>
         <span title={absoluteDate(thread().lastActivityAt)}>
-          {relativeDate(thread().lastActivityAt)}
+          updated {relativeDate(thread().lastActivityAt)}
         </span>
         <span>{plural(thread().messageCount, "message")}</span>
         <For each={thread().mailingLists}>
-          {(mailingList) => <span class="meta-tag">{mailingList.name}</span>}
+          {(mailingList) => (
+            <span class="meta-tag" title={mailingList.name}>
+              {mailingList.archiveGroup}
+            </span>
+          )}
         </For>
         <For each={thread().subsystems}>
           {(subsystem) => <span class="meta-tag">{subsystem.name}</span>}
@@ -88,27 +97,22 @@ export function ThreadListPage() {
   };
 
   return (
-    <section aria-labelledby="threads-heading">
+    <section aria-label="Threads">
       <div class="page-heading">
-        <div>
-          <h1 id="threads-heading">Threads</h1>
-        </div>
-        <label class="filter-control">
-          <span>Mailing list</span>
-          <select
-            aria-label="Filter by mailing list"
-            disabled={mailingLists.loading}
-            onChange={selectMailingList}
-            value={firstParameter(searchParams.mailingList) || ""}
-          >
-            <option value="">All lists</option>
-            <For each={mailingLists()?.items}>
-              {(mailingList) => (
-                <option value={mailingList.archiveGroup}>{mailingList.name}</option>
-              )}
-            </For>
-          </select>
-        </label>
+        <select
+          class="filter-control"
+          aria-label="Filter by mailing list"
+          disabled={mailingLists.loading}
+          onChange={selectMailingList}
+          value={firstParameter(searchParams.mailingList) || ""}
+        >
+          <option value="">All lists</option>
+          <For each={mailingLists()?.items}>
+            {(mailingList) => (
+              <option value={mailingList.archiveGroup}>{mailingList.archiveGroup}</option>
+            )}
+          </For>
+        </select>
       </div>
 
       <Show when={mailingLists.error}>
@@ -163,7 +167,6 @@ export function ThreadListPage() {
               >
                 Previous
               </button>
-              <span>{threads.loading ? "Loading…" : `${page().items.length} threads`}</span>
               <button
                 disabled={!page().pagination.nextCursor || threads.loading}
                 onClick={() => moveToCursor(page().pagination.nextCursor)}
