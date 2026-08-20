@@ -164,6 +164,11 @@ struct PublicInboxIngestBatchTests {
             }
 
             try await fixture.remove()
+            #expect(
+                try await fixture.messageState(
+                    messageID: "missing-root@example.com"
+                ) == nil
+            )
         }
     }
 
@@ -818,8 +823,28 @@ private final class DatabaseFixture {
 
         try await execute(
             """
-            DELETE FROM threads
-            WHERE root_message_id LIKE \(prefix + "%")
+            DELETE FROM threads AS thread
+            WHERE thread.root_message_id LIKE
+                    \(prefix + "%")
+               OR (
+                    EXISTS (
+                        SELECT 1
+                        FROM messages AS owned_message
+                        WHERE owned_message.thread_id =
+                                thread.id
+                          AND owned_message.message_id LIKE
+                                \(prefix + "%")
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM messages AS unowned_message
+                        WHERE unowned_message.thread_id =
+                                thread.id
+                          AND NOT unowned_message.is_placeholder
+                          AND unowned_message.message_id NOT LIKE
+                                \(prefix + "%")
+                    )
+               )
             """
         )
         try await execute(
