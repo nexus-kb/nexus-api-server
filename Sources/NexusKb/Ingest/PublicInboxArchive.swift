@@ -18,6 +18,26 @@ struct PublicInboxCommit: Sendable, Equatable {
     let rawMessage: Data
 }
 
+enum PublicInboxArchiveEntry:
+    Sendable,
+    Equatable
+{
+    case message(PublicInboxCommit)
+    case deletion(
+        commitOID: String,
+        blobOID: String
+    )
+
+    var commitOID: String {
+        switch self {
+        case .message(let message):
+            message.commitOID
+        case .deletion(let commitOID, _):
+            commitOID
+        }
+    }
+}
+
 final class PublicInboxRevisionManifest:
     @unchecked Sendable
 {
@@ -162,7 +182,7 @@ enum PublicInboxArchiveError:
         cursor: String,
         tip: String
     )
-    case missingMessageBlob(String)
+    case invalidArchiveEntry(String)
     case batchTooLarge(Int)
     case cursorAndTipHaveDiverged(
         cursor: String,
@@ -372,9 +392,9 @@ struct PublicInboxEpochRepository: Sendable {
         )
     }
 
-    func loadMessages(
+    func loadEntries(
         commitOIDs: [String]
-    ) throws -> [PublicInboxCommit] {
+    ) throws -> [PublicInboxArchiveEntry] {
         guard !commitOIDs.isEmpty else {
             return []
         }
@@ -403,10 +423,65 @@ struct PublicInboxEpochRepository: Sendable {
             standardInput: Data(requests.utf8)
         )
 
-        return try CatFileBatchParser.parse(
-            result.standardOutput,
-            commitOIDs: commitOIDs
+        let messageLookups =
+            try CatFileBatchParser.parse(
+                result.standardOutput,
+                commitOIDs: commitOIDs
+            )
+
+        let deletionRequests = commitOIDs.map {
+            "\($0):d\n"
+        }.joined()
+
+        let deletionResult = try git.run(
+            arguments: [
+                "-C",
+                epoch.repositoryURL.path,
+                "cat-file",
+                "--batch-check",
+            ],
+            standardInput: Data(
+                deletionRequests.utf8
+            )
         )
+
+        let deletionBlobOIDs =
+            try CatFileBatchCheckParser.parse(
+                deletionResult.standardOutput,
+                commitOIDs: commitOIDs
+            )
+
+        return try zip(
+            messageLookups,
+            deletionBlobOIDs
+        ).map { messageLookup, deletionBlobOID in
+            switch (
+                messageLookup,
+                deletionBlobOID
+            ) {
+            case (.message(let message), nil):
+                return .message(message)
+
+            case (
+                .missing(let commitOID),
+                .some(let blobOID)
+            ):
+                return .deletion(
+                    commitOID: commitOID,
+                    blobOID: blobOID
+                )
+
+            case (.message(let message), .some):
+                throw PublicInboxArchiveError
+                    .invalidArchiveEntry(
+                        message.commitOID
+                    )
+
+            case (.missing(let commitOID), nil):
+                throw PublicInboxArchiveError
+                    .invalidArchiveEntry(commitOID)
+            }
+        }
     }
 }
 
@@ -603,15 +678,20 @@ private struct GitProcess: Sendable {
 }
 
 private enum CatFileBatchParser {
+    enum Lookup {
+        case message(PublicInboxCommit)
+        case missing(String)
+    }
+
     static func parse(
         _ data: Data,
         commitOIDs: [String]
-    ) throws -> [PublicInboxCommit] {
+    ) throws -> [Lookup] {
         let bytes = [UInt8](data)
         var offset = 0
-        var messages: [PublicInboxCommit] = []
+        var lookups: [Lookup] = []
 
-        messages.reserveCapacity(
+        lookups.reserveCapacity(
             commitOIDs.count
         )
 
@@ -625,8 +705,10 @@ private enum CatFileBatchParser {
             )
 
             if fields.last == "missing" {
-                throw PublicInboxArchiveError
-                    .missingMessageBlob(commitOID)
+                lookups.append(
+                    .missing(commitOID)
+                )
+                continue
             }
 
             guard fields.count == 3,
@@ -657,16 +739,25 @@ private enum CatFileBatchParser {
 
             offset += 1
 
-            messages.append(
-                PublicInboxCommit(
-                    commitOID: commitOID,
-                    blobOID: blobOID,
-                    rawMessage: rawMessage
+            lookups.append(
+                .message(
+                    PublicInboxCommit(
+                        commitOID: commitOID,
+                        blobOID: blobOID,
+                        rawMessage: rawMessage
+                    )
                 )
             )
         }
 
-        return messages
+        guard offset == bytes.count else {
+            throw PublicInboxArchiveError
+                .invalidGitOutput(
+                    "unexpected cat-file batch output"
+                )
+        }
+
+        return lookups
     }
 
     private static func readLine(
@@ -680,6 +771,80 @@ private enum CatFileBatchParser {
             throw PublicInboxArchiveError
                 .invalidGitOutput(
                     "truncated cat-file header"
+                )
+        }
+
+        let line = String(
+            decoding: bytes[offset..<newline],
+            as: UTF8.self
+        )
+
+        offset = newline + 1
+
+        return line
+    }
+}
+
+private enum CatFileBatchCheckParser {
+    static func parse(
+        _ data: Data,
+        commitOIDs: [String]
+    ) throws -> [String?] {
+        let bytes = [UInt8](data)
+        var offset = 0
+        var blobOIDs: [String?] = []
+
+        blobOIDs.reserveCapacity(
+            commitOIDs.count
+        )
+
+        for _ in commitOIDs {
+            let header = try readLine(
+                bytes,
+                offset: &offset
+            )
+            let fields = header.split(
+                separator: " "
+            )
+
+            if fields.last == "missing" {
+                blobOIDs.append(nil)
+                continue
+            }
+
+            guard fields.count == 3,
+                  fields[1] == "blob",
+                  let size = Int(fields[2]),
+                  size >= 0
+            else {
+                throw PublicInboxArchiveError
+                    .invalidGitOutput(header)
+            }
+
+            blobOIDs.append(String(fields[0]))
+        }
+
+        guard offset == bytes.count else {
+            throw PublicInboxArchiveError
+                .invalidGitOutput(
+                    "unexpected cat-file batch-check output"
+                )
+        }
+
+        return blobOIDs
+    }
+
+    private static func readLine(
+        _ bytes: [UInt8],
+        offset: inout Int
+    ) throws -> String {
+        guard offset < bytes.count,
+              let newline = bytes[offset...]
+                  .firstIndex(of: 10)
+        else {
+            throw PublicInboxArchiveError
+                .invalidGitOutput(
+                    "truncated cat-file batch-check header"
                 )
         }
 

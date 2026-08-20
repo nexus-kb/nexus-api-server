@@ -361,7 +361,7 @@ struct IngestPublicInboxEpochJob: AsyncJob {
                     break
                 }
 
-                let messages =
+                let entries =
                     try await context
                     .application
                     .threadPool
@@ -369,39 +369,59 @@ struct IngestPublicInboxEpochJob: AsyncJob {
                         let parser =
                             IngestMessageParser()
 
-                        return
-                            try repository
-                            .loadMessages(
+                        return try repository
+                            .loadEntries(
                                 commitOIDs:
                                     commitOIDs
                             )
-                            .map { message in
-                                do {
+                            .map { entry in
+                                switch entry {
+                                case .deletion(
+                                    let commitOID,
+                                    let blobOID
+                                ):
                                     return
-                                        PreparedPublicInboxMessage(
+                                        PreparedPublicInboxArchiveEntry
+                                        .deletion(
                                             commitOID:
-                                                message.commitOID,
+                                                commitOID,
                                             blobOID:
-                                                message.blobOID,
-                                            parsed:
-                                                try parser.parse(
-                                                    message.rawMessage
-                                                )
+                                                blobOID
                                         )
-                                } catch {
-                                    throw
-                                        PublicInboxIngestJobError
-                                        .messageParseFailed(
-                                            commitOID:
-                                                message.commitOID,
-                                            blobOID:
-                                                message.blobOID,
-                                            error:
-                                                String(
-                                                    reflecting:
-                                                        error
+
+                                case .message(
+                                    let message
+                                ):
+                                    do {
+                                        return
+                                            PreparedPublicInboxArchiveEntry
+                                            .message(
+                                                PreparedPublicInboxMessage(
+                                                    commitOID:
+                                                        message.commitOID,
+                                                    blobOID:
+                                                        message.blobOID,
+                                                    parsed:
+                                                        try parser.parse(
+                                                            message.rawMessage
+                                                        )
                                                 )
-                                        )
+                                            )
+                                    } catch {
+                                        throw
+                                            PublicInboxIngestJobError
+                                            .messageParseFailed(
+                                                commitOID:
+                                                    message.commitOID,
+                                                blobOID:
+                                                    message.blobOID,
+                                                error:
+                                                    String(
+                                                        reflecting:
+                                                            error
+                                                    )
+                                            )
+                                    }
                                 }
                             }
                     }
@@ -409,7 +429,7 @@ struct IngestPublicInboxEpochJob: AsyncJob {
                 try await lease.assertOwned()
 
                 _ = try await store.ingestBatch(
-                    messages,
+                    entries,
                     mailingListID:
                         payload.mailingListID,
                     epoch: payload.target.epoch,
@@ -419,10 +439,21 @@ struct IngestPublicInboxEpochJob: AsyncJob {
                 )
 
                 expectedCursor =
-                    messages.last?.commitOID
+                    entries.last?.commitOID
                     ?? expectedCursor
 
-                processedCount += messages.count
+                let messageCount = entries.reduce(
+                    into: 0
+                ) { count, entry in
+                    if case .message = entry {
+                        count += 1
+                    }
+                }
+
+                let deletionCount =
+                    entries.count - messageCount
+
+                processedCount += messageCount
 
                 context.logger.info(
                     "Ingested public-inbox database batch",
@@ -432,7 +463,11 @@ struct IngestPublicInboxEpochJob: AsyncJob {
                         "epoch":
                             "\(payload.target.epoch)",
                         "message-count":
-                            "\(messages.count)",
+                            "\(messageCount)",
+                        "deletion-count":
+                            "\(deletionCount)",
+                        "scanned-commit-count":
+                            "\(entries.count)",
                         "total-message-count":
                             "\(processedCount)",
                         "cursor":

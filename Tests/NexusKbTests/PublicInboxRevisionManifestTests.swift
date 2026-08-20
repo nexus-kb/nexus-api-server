@@ -189,6 +189,109 @@ struct PublicInboxRevisionManifestTests {
                 .batchSizeRange == 1...10_000
         )
     }
+
+    @Test("Archive loader preserves messages and deletions")
+    func loadsMessagesAndDeletions() throws {
+        let repository = try TemporaryGitRepository()
+        let first = try repository.commit("first")
+        let deletion = try repository.delete("deleted")
+        let secondDeletion = try repository.delete(
+            "also deleted"
+        )
+        let third = try repository.commit("third")
+
+        let entries = try repository.subject
+            .loadEntries(
+                commitOIDs: [
+                    first,
+                    deletion,
+                    secondDeletion,
+                    third,
+                ]
+            )
+
+        #expect(entries.count == 4)
+
+        guard case .message(let firstMessage) =
+                entries[0]
+        else {
+            Issue.record("Expected first message")
+            return
+        }
+
+        #expect(firstMessage.commitOID == first)
+        #expect(
+            firstMessage.rawMessage
+                == Data("first".utf8)
+        )
+
+        #expect(
+            entries[2] == .deletion(
+                commitOID: secondDeletion,
+                blobOID: try repository.blobOID(
+                    commit: secondDeletion,
+                    path: "d"
+                )
+            )
+        )
+
+        #expect(
+            entries[1] == .deletion(
+                commitOID: deletion,
+                blobOID: try repository.blobOID(
+                    commit: deletion,
+                    path: "d"
+                )
+            )
+        )
+
+        guard case .message(let thirdMessage) =
+                entries[3]
+        else {
+            Issue.record("Expected third message")
+            return
+        }
+
+        #expect(thirdMessage.commitOID == third)
+        #expect(
+            thirdMessage.rawMessage
+                == Data("third".utf8)
+        )
+    }
+
+    @Test("Archive loader rejects a commit without m or d")
+    func rejectsInvalidArchiveEntry() throws {
+        let repository = try TemporaryGitRepository()
+        _ = try repository.commit("first")
+        let invalid = try repository.invalidCommit()
+
+        #expect(
+            throws:
+                PublicInboxArchiveError
+                .invalidArchiveEntry(invalid)
+        ) {
+            try repository.subject.loadEntries(
+                commitOIDs: [invalid]
+            )
+        }
+    }
+
+    @Test("Archive loader rejects a commit with both m and d")
+    func rejectsAmbiguousArchiveEntry() throws {
+        let repository = try TemporaryGitRepository()
+        _ = try repository.commit("first")
+        let invalid = try repository.ambiguousCommit()
+
+        #expect(
+            throws:
+                PublicInboxArchiveError
+                .invalidArchiveEntry(invalid)
+        ) {
+            try repository.subject.loadEntries(
+                commitOIDs: [invalid]
+            )
+        }
+    }
 }
 
 private final class TemporaryGitRepository {
@@ -240,13 +343,17 @@ private final class TemporaryGitRepository {
     }
 
     func commit(_ value: String) throws -> String {
+        try? FileManager.default.removeItem(
+            at: url.appendingPathComponent("d")
+        )
+
         try Data(value.utf8).write(
             to: url.appendingPathComponent("m")
         )
 
         try run([
             "add",
-            "m",
+            "--all",
         ])
         try run([
             "commit",
@@ -257,6 +364,90 @@ private final class TemporaryGitRepository {
         return try text([
             "rev-parse",
             "HEAD",
+        ])
+    }
+
+    func delete(_ value: String) throws -> String {
+        try? FileManager.default.removeItem(
+            at: url.appendingPathComponent("m")
+        )
+
+        try Data(value.utf8).write(
+            to: url.appendingPathComponent("d")
+        )
+
+        try run([
+            "add",
+            "--all",
+        ])
+        try run([
+            "commit",
+            "-m",
+            "delete",
+        ])
+
+        return try text([
+            "rev-parse",
+            "HEAD",
+        ])
+    }
+
+    func invalidCommit() throws -> String {
+        try? FileManager.default.removeItem(
+            at: url.appendingPathComponent("m")
+        )
+        try? FileManager.default.removeItem(
+            at: url.appendingPathComponent("d")
+        )
+
+        try Data("invalid".utf8).write(
+            to: url.appendingPathComponent("x")
+        )
+
+        try run([
+            "add",
+            "--all",
+        ])
+        try run([
+            "commit",
+            "-m",
+            "invalid",
+        ])
+
+        return try text([
+            "rev-parse",
+            "HEAD",
+        ])
+    }
+
+    func ambiguousCommit() throws -> String {
+        try Data("deleted".utf8).write(
+            to: url.appendingPathComponent("d")
+        )
+
+        try run([
+            "add",
+            "--all",
+        ])
+        try run([
+            "commit",
+            "-m",
+            "ambiguous",
+        ])
+
+        return try text([
+            "rev-parse",
+            "HEAD",
+        ])
+    }
+
+    func blobOID(
+        commit: String,
+        path: String
+    ) throws -> String {
+        try text([
+            "rev-parse",
+            "\(commit):\(path)",
         ])
     }
 

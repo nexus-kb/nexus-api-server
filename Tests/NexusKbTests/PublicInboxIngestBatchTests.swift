@@ -191,6 +191,247 @@ struct PublicInboxIngestBatchTests {
             try await fixture.remove()
         }
     }
+
+    @Test("Deletion retracts an orphan and advances the cursor")
+    func retractsDeletedOrphan() async throws {
+        try await withApp(
+            configure: configure
+        ) { app in
+            let fixture = try await DatabaseFixture(
+                app: app
+            )
+
+            do {
+                let message = try fixture.message(
+                    number: 1
+                )
+                let deletionCommit =
+                    String(repeating: "f", count: 40)
+                let service = PostgresIngestService(
+                    client: app.postgres
+                )
+
+                _ = try await service.ingestBatch(
+                    [message],
+                    mailingListID:
+                        fixture.mailingListID,
+                    epoch: fixture.epoch,
+                    expectedPreviousCommitOID: nil,
+                    logger: app.logger
+                )
+
+                _ = try await service.ingestBatch(
+                    [
+                        .deletion(
+                            commitOID: deletionCommit,
+                            blobOID: message.blobOID
+                        )
+                    ],
+                    mailingListID:
+                        fixture.mailingListID,
+                    epoch: fixture.epoch,
+                    expectedPreviousCommitOID:
+                        message.commitOID,
+                    logger: app.logger
+                )
+
+                #expect(
+                    try await fixture.cursor()
+                        == deletionCommit
+                )
+                #expect(
+                    try await fixture.messageState(
+                        messageID:
+                            message.parsed.message
+                            .messageID
+                    ) == nil
+                )
+                #expect(
+                    try await fixture.threadCount() == 0
+                )
+            } catch {
+                try? await fixture.remove()
+                throw error
+            }
+
+            try await fixture.remove()
+        }
+    }
+
+    @Test("Deleted parent becomes a placeholder")
+    func deletedParentBecomesPlaceholder() async throws {
+        try await withApp(
+            configure: configure
+        ) { app in
+            let fixture = try await DatabaseFixture(
+                app: app
+            )
+
+            do {
+                let parent = try fixture.message(
+                    number: 1
+                )
+                let reply = try fixture.message(
+                    number: 2,
+                    inReplyTo:
+                        parent.parsed.message
+                        .messageID
+                )
+                let deletionCommit =
+                    String(repeating: "e", count: 40)
+                let service = PostgresIngestService(
+                    client: app.postgres
+                )
+
+                _ = try await service.ingestBatch(
+                    [parent, reply],
+                    mailingListID:
+                        fixture.mailingListID,
+                    epoch: fixture.epoch,
+                    expectedPreviousCommitOID: nil,
+                    logger: app.logger
+                )
+
+                _ = try await service.ingestBatch(
+                    [
+                        .deletion(
+                            commitOID: deletionCommit,
+                            blobOID: parent.blobOID
+                        )
+                    ],
+                    mailingListID:
+                        fixture.mailingListID,
+                    epoch: fixture.epoch,
+                    expectedPreviousCommitOID:
+                        reply.commitOID,
+                    logger: app.logger
+                )
+
+                let parentState = try await fixture
+                    .messageState(
+                        messageID:
+                            parent.parsed.message
+                            .messageID
+                    )
+
+                #expect(
+                    parentState?.isPlaceholder == true
+                )
+                #expect(
+                    try await fixture.mailingListBlobOID(
+                        messageID:
+                            parent.parsed.message
+                            .messageID
+                    ) == nil
+                )
+                #expect(
+                    try await fixture.messageState(
+                        messageID:
+                            reply.parsed.message
+                            .messageID
+                    )?.isPlaceholder == false
+                )
+                #expect(
+                    try await fixture.cursor()
+                        == deletionCommit
+                )
+            } catch {
+                try? await fixture.remove()
+                throw error
+            }
+
+            try await fixture.remove()
+        }
+    }
+
+    @Test("Deletion preserves a message linked to another list")
+    func preservesCrossListMessage() async throws {
+        try await withApp(
+            configure: configure
+        ) { app in
+            let fixture = try await DatabaseFixture(
+                app: app
+            )
+
+            do {
+                let message = try fixture.message(
+                    number: 1
+                )
+                let otherMailingListID =
+                    try await fixture
+                    .createAdditionalMailingList()
+                let service = PostgresIngestService(
+                    client: app.postgres
+                )
+
+                _ = try await service.ingestBatch(
+                    [message],
+                    mailingListID:
+                        fixture.mailingListID,
+                    epoch: fixture.epoch,
+                    expectedPreviousCommitOID: nil,
+                    logger: app.logger
+                )
+
+                _ = try await service.ingestBatch(
+                    [message],
+                    mailingListID:
+                        otherMailingListID,
+                    epoch: fixture.epoch,
+                    expectedPreviousCommitOID: nil,
+                    logger: app.logger
+                )
+
+                _ = try await service.ingestBatch(
+                    [
+                        .deletion(
+                            commitOID:
+                                String(
+                                    repeating: "d",
+                                    count: 40
+                                ),
+                            blobOID: message.blobOID
+                        )
+                    ],
+                    mailingListID:
+                        fixture.mailingListID,
+                    epoch: fixture.epoch,
+                    expectedPreviousCommitOID:
+                        message.commitOID,
+                    logger: app.logger
+                )
+
+                #expect(
+                    try await fixture.mailingListBlobOID(
+                        messageID:
+                            message.parsed.message
+                            .messageID
+                    ) == nil
+                )
+                #expect(
+                    try await fixture.mailingListBlobOID(
+                        messageID:
+                            message.parsed.message
+                            .messageID,
+                        mailingListID:
+                            otherMailingListID
+                    ) == message.blobOID
+                )
+                #expect(
+                    try await fixture.messageState(
+                        messageID:
+                            message.parsed.message
+                            .messageID
+                    )?.isPlaceholder == false
+                )
+            } catch {
+                try? await fixture.remove()
+                throw error
+            }
+
+            try await fixture.remove()
+        }
+    }
 }
 
 private struct TestPerson {
@@ -219,6 +460,7 @@ private final class DatabaseFixture {
     let prefix: String
     let mailingListID: Int64
     let epoch: Int32 = 2_000_000_000
+    private var additionalMailingListIDs: [Int64] = []
 
     init(app: Application) async throws {
         self.app = app
@@ -355,6 +597,39 @@ private final class DatabaseFixture {
         return nil
     }
 
+    func createAdditionalMailingList()
+        async throws -> Int64
+    {
+        let rows = try await app.postgres.query(
+            """
+            INSERT INTO mailing_lists (
+                name,
+                archive_group
+            )
+            VALUES (
+                \(prefix + "-additional"),
+                \(prefix + "-additional")
+            )
+            RETURNING id
+            """,
+            logger: app.logger
+        )
+
+        var value: Int64?
+
+        for try await row in rows {
+            value = try row.decode(Int64.self)
+        }
+
+        let mailingListID = try #require(value)
+
+        additionalMailingListIDs.append(
+            mailingListID
+        )
+
+        return mailingListID
+    }
+
     func messageCount() async throws -> Int64 {
         let rows = try await app.postgres.query(
             """
@@ -373,6 +648,17 @@ private final class DatabaseFixture {
     }
 
     func remove() async throws {
+        for mailingListID
+            in additionalMailingListIDs
+        {
+            try await execute(
+                """
+                DELETE FROM mailing_lists
+                WHERE id = \(mailingListID)
+                """
+            )
+        }
+
         try await execute(
             """
             DELETE FROM mailing_lists
@@ -518,8 +804,12 @@ private final class DatabaseFixture {
     }
 
     func mailingListBlobOID(
-        messageID: String
+        messageID: String,
+        mailingListID: Int64? = nil
     ) async throws -> String? {
+        let targetMailingListID =
+            mailingListID ?? self.mailingListID
+
         let rows = try await app.postgres.query(
             """
             SELECT link.archive_blob_oid
@@ -531,7 +821,7 @@ private final class DatabaseFixture {
             WHERE message.message_id =
                     \(messageID)
               AND link.mailing_list_id =
-                    \(mailingListID)
+                    \(targetMailingListID)
             """,
             logger: app.logger
         )

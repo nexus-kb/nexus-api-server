@@ -45,6 +45,25 @@ struct PreparedPublicInboxMessage:
     let parsed: ParsedIngestMessage
 }
 
+enum PreparedPublicInboxArchiveEntry:
+    Sendable
+{
+    case message(PreparedPublicInboxMessage)
+    case deletion(
+        commitOID: String,
+        blobOID: String
+    )
+
+    var commitOID: String {
+        switch self {
+        case .message(let message):
+            message.commitOID
+        case .deletion(let commitOID, _):
+            commitOID
+        }
+    }
+}
+
 struct PostgresIngestService: Sendable {
 
     private struct NormalizedPublicInboxMessage:
@@ -159,9 +178,53 @@ struct PostgresIngestService: Sendable {
         expectedPreviousCommitOID: String?,
         logger: Logger
     ) async throws -> [PostgresIngestResult] {
-        guard let finalMessage = messages.last
+        try await ingestBatch(
+            messages.map {
+                .message($0)
+            },
+            mailingListID: mailingListID,
+            epoch: epoch,
+            expectedPreviousCommitOID:
+                expectedPreviousCommitOID,
+            logger: logger
+        )
+    }
+
+    func ingestBatch(
+        _ entries:
+            [PreparedPublicInboxArchiveEntry],
+        mailingListID: Int64,
+        epoch: Int32,
+        expectedPreviousCommitOID: String?,
+        logger: Logger
+    ) async throws -> [PostgresIngestResult] {
+        guard let finalEntry = entries.last
         else {
             return []
+        }
+
+        let messages = entries.compactMap {
+            entry -> PreparedPublicInboxMessage? in
+
+            guard case .message(let message) = entry
+            else {
+                return nil
+            }
+
+            return message
+        }
+
+        var finalDeletionBlobOIDs: Set<String> = []
+
+        for entry in entries {
+            switch entry {
+            case .message(let message):
+                finalDeletionBlobOIDs.remove(
+                    message.blobOID
+                )
+            case .deletion(_, let blobOID):
+                finalDeletionBlobOIDs.insert(blobOID)
+            }
         }
 
         let normalized = messages.map {
@@ -288,13 +351,30 @@ struct PostgresIngestService: Sendable {
                     logger: logger
                 )
 
+            let unlinkedMessageIDs =
+                try await removeMailingListLinks(
+                    blobOIDs: Array(
+                        finalDeletionBlobOIDs
+                    ).sorted(),
+                    mailingListID: mailingListID,
+                    connection: connection,
+                    logger: logger
+                )
+
+            try await cleanupOrphanedMessages(
+                candidateMessageIDs:
+                    unlinkedMessageIDs,
+                connection: connection,
+                logger: logger
+            )
+
             try await advanceCursor(
                 mailingListID: mailingListID,
                 epoch: epoch,
                 expectedPreviousCommitOID:
                     expectedPreviousCommitOID,
                 commitOID:
-                    finalMessage.commitOID,
+                    finalEntry.commitOID,
                 connection: connection,
                 logger: logger
             )
@@ -722,6 +802,321 @@ struct PostgresIngestService: Sendable {
             ) DO UPDATE
             SET archive_blob_oid =
                 EXCLUDED.archive_blob_oid
+            """,
+            on: connection,
+            logger: logger
+        )
+    }
+
+    private func removeMailingListLinks(
+        blobOIDs: [String],
+        mailingListID: Int64,
+        connection: PostgresConnection,
+        logger: Logger
+    ) async throws -> [Int64] {
+        guard !blobOIDs.isEmpty else {
+            return []
+        }
+
+        let rows = try await connection.query(
+            """
+            DELETE FROM messages_mailing_lists
+            WHERE mailing_list_id =
+                    \(mailingListID)
+              AND archive_blob_oid = ANY(
+                    \(blobOIDs)::text[]
+              )
+            RETURNING message_id
+            """,
+            logger: logger
+        )
+
+        var messageIDs: [Int64] = []
+
+        for try await row in rows {
+            messageIDs.append(
+                try row.decode(Int64.self)
+            )
+        }
+
+        return messageIDs
+    }
+
+    private func cleanupOrphanedMessages(
+        candidateMessageIDs: [Int64],
+        connection: PostgresConnection,
+        logger: Logger
+    ) async throws {
+        guard !candidateMessageIDs.isEmpty else {
+            return
+        }
+
+        let orphanRows = try await connection.query(
+            """
+            SELECT
+                message.id,
+                message.message_id,
+                message.thread_id
+            FROM messages AS message
+            WHERE message.id = ANY(
+                    \(candidateMessageIDs)::bigint[]
+                  )
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM messages_mailing_lists AS link
+                    WHERE link.message_id =
+                            message.id
+                  )
+            FOR UPDATE
+            """,
+            logger: logger
+        )
+
+        var orphanIDs: [Int64] = []
+        var orphanMessageIDs: [String] = []
+        var affectedThreadIDs: Set<Int64> = []
+
+        for try await row in orphanRows {
+            let value = try row.decode(
+                (Int64, String, Int64).self
+            )
+
+            orphanIDs.append(value.0)
+            orphanMessageIDs.append(value.1)
+            affectedThreadIDs.insert(value.2)
+        }
+
+        guard !orphanIDs.isEmpty else {
+            return
+        }
+
+        let patchSetRows = try await connection.query(
+            """
+            SELECT DISTINCT patchset.id
+            FROM patchsets AS patchset
+            LEFT JOIN patches AS patch
+              ON patch.patchset_id = patchset.id
+            WHERE patchset.cover_letter_message_id
+                    = ANY(
+                        \(orphanMessageIDs)::text[]
+                    )
+               OR patch.message_id = ANY(
+                    \(orphanMessageIDs)::text[]
+                  )
+            """,
+            logger: logger
+        )
+
+        var affectedPatchSetIDs: [Int64] = []
+
+        for try await row in patchSetRows {
+            affectedPatchSetIDs.append(
+                try row.decode(Int64.self)
+            )
+        }
+
+        try await execute(
+            """
+            DELETE FROM messages_recipients
+            WHERE message_id = ANY(
+                    \(orphanIDs)::bigint[]
+                  )
+            """,
+            on: connection,
+            logger: logger
+        )
+
+        try await execute(
+            """
+            DELETE FROM messages_subsystems
+            WHERE message_id = ANY(
+                    \(orphanIDs)::bigint[]
+                  )
+            """,
+            on: connection,
+            logger: logger
+        )
+
+        try await execute(
+            """
+            DELETE FROM patches
+            WHERE message_id = ANY(
+                    \(orphanMessageIDs)::text[]
+                  )
+            """,
+            on: connection,
+            logger: logger
+        )
+
+        try await execute(
+            """
+            UPDATE patchsets
+            SET
+                cover_letter_message_id = NULL,
+                updated_at = now()
+            WHERE cover_letter_message_id = ANY(
+                    \(orphanMessageIDs)::text[]
+                  )
+            """,
+            on: connection,
+            logger: logger
+        )
+
+        let threadIDs = Array(
+            affectedThreadIDs
+        ).sorted()
+
+        try await execute(
+            """
+            DELETE FROM threads AS thread
+            WHERE thread.id = ANY(
+                    \(threadIDs)::bigint[]
+                  )
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM messages AS message
+                    WHERE message.thread_id =
+                            thread.id
+                      AND NOT (
+                            message.id = ANY(
+                                \(orphanIDs)::bigint[]
+                            )
+                          )
+                  )
+            """,
+            on: connection,
+            logger: logger
+        )
+
+        try await execute(
+            """
+            UPDATE messages
+            SET
+                in_reply_to = NULL,
+                references_ids = ARRAY[]::text[],
+                author = NULL,
+                subject = '(placeholder)',
+                sent_at = NULL,
+                body = '',
+                to_recipients = '',
+                cc_recipients = '',
+                is_placeholder = true,
+                updated_at = now()
+            WHERE id = ANY(
+                    \(orphanIDs)::bigint[]
+                  )
+            """,
+            on: connection,
+            logger: logger
+        )
+
+        if !affectedPatchSetIDs.isEmpty {
+            try await execute(
+                """
+                DELETE FROM patchsets AS patchset
+                WHERE patchset.id = ANY(
+                        \(affectedPatchSetIDs)::bigint[]
+                      )
+                  AND patchset.cover_letter_message_id
+                        IS NULL
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM patches AS patch
+                        WHERE patch.patchset_id =
+                                patchset.id
+                      )
+                """,
+                on: connection,
+                logger: logger
+            )
+
+            try await execute(
+                """
+                UPDATE patchsets AS patchset
+                SET
+                    received_parts = (
+                        SELECT count(*)::integer
+                        FROM patches AS patch
+                        WHERE patch.patchset_id =
+                                patchset.id
+                    ),
+                    status = CASE
+                        WHEN patchset.status =
+                                'Malformed'
+                        THEN patchset.status
+                        WHEN (
+                            SELECT count(*)
+                            FROM patches AS patch
+                            WHERE patch.patchset_id =
+                                    patchset.id
+                        ) >= patchset.total_parts
+                        THEN 'Complete'
+                        ELSE 'Incomplete'
+                    END,
+                    updated_at = now()
+                WHERE patchset.id = ANY(
+                        \(affectedPatchSetIDs)::bigint[]
+                      )
+                """,
+                on: connection,
+                logger: logger
+            )
+        }
+
+        try await execute(
+            """
+            UPDATE threads AS thread
+            SET
+                subject = metadata.subject,
+                last_updated_at =
+                    metadata.last_updated_at
+            FROM (
+                SELECT
+                    target.id,
+                    COALESCE(
+                        (
+                            SELECT message.subject
+                            FROM messages AS message
+                            WHERE message.thread_id =
+                                    target.id
+                              AND NOT message.is_placeholder
+                            ORDER BY
+                                CASE
+                                    WHEN message.message_id =
+                                            target.root_message_id
+                                    THEN 0
+                                    ELSE 1
+                                END,
+                                COALESCE(
+                                    message.sent_at,
+                                    message.created_at
+                                ),
+                                message.id
+                            LIMIT 1
+                        ),
+                        '(placeholder)'
+                    ) AS subject,
+                    COALESCE(
+                        (
+                            SELECT max(
+                                COALESCE(
+                                    message.sent_at,
+                                    message.created_at
+                                )
+                            )
+                            FROM messages AS message
+                            WHERE message.thread_id =
+                                    target.id
+                              AND NOT message.is_placeholder
+                        ),
+                        target.created_at
+                    ) AS last_updated_at
+                FROM threads AS target
+                WHERE target.id = ANY(
+                        \(threadIDs)::bigint[]
+                      )
+            ) AS metadata
+            WHERE thread.id = metadata.id
             """,
             on: connection,
             logger: logger
