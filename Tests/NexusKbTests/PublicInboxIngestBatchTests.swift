@@ -460,6 +460,96 @@ struct PublicInboxIngestBatchTests {
         }
     }
 
+    @Test("Deleting a patch removes its empty patchset and lineage")
+    func deletingPatchRemovesDerivedState() async throws {
+        try await withApp(
+            configure: configure
+        ) { app in
+            let fixture = try await DatabaseFixture(
+                app: app
+            )
+
+            do {
+                let message = try fixture.message(
+                    number: 1,
+                    subject:
+                        "[PATCH] \(fixture.prefix): delete me",
+                    body:
+                        """
+                        diff --git a/file b/file
+                        --- a/file
+                        +++ b/file
+                        @@ -1 +1 @@
+                        -old
+                        +new
+                        """
+                )
+                let service = PostgresIngestService(
+                    client: app.postgres
+                )
+
+                _ = try await service.ingestBatch(
+                    [message],
+                    mailingListID:
+                        fixture.mailingListID,
+                    epoch: fixture.epoch,
+                    expectedPreviousCommitOID: nil,
+                    logger: app.logger
+                )
+
+                let patchSet = try #require(
+                    try await fixture.patchSetState(
+                        messageID:
+                            message.parsed.message
+                            .messageID
+                    )
+                )
+                let lineage = try #require(
+                    try await fixture.lineageState(
+                        messageID:
+                            message.parsed.message
+                            .messageID
+                    )
+                )
+
+                _ = try await service.ingestBatch(
+                    [
+                        .deletion(
+                            commitOID:
+                                String(
+                                    repeating: "c",
+                                    count: 40
+                                ),
+                            blobOID: message.blobOID
+                        )
+                    ],
+                    mailingListID:
+                        fixture.mailingListID,
+                    epoch: fixture.epoch,
+                    expectedPreviousCommitOID:
+                        message.commitOID,
+                    logger: app.logger
+                )
+
+                #expect(
+                    try await fixture.patchSetExists(
+                        id: patchSet.id
+                    ) == false
+                )
+                #expect(
+                    try await fixture.lineageExists(
+                        id: lineage.lineageID
+                    ) == false
+                )
+            } catch {
+                try? await fixture.remove()
+                throw error
+            }
+
+            try await fixture.remove()
+        }
+    }
+
     @Test("Deletion preserves a message linked to another list")
     func preservesCrossListMessage() async throws {
         try await withApp(
@@ -1226,6 +1316,48 @@ private final class DatabaseFixture {
 
         return nil
     }
+
+    func patchSetExists(
+        id: Int64
+    ) async throws -> Bool {
+        let rows = try await app.postgres.query(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM patchsets
+                WHERE id = \(id)
+            )
+            """,
+            logger: app.logger
+        )
+
+        for try await row in rows {
+            return try row.decode(Bool.self)
+        }
+
+        return false
+    }
+
+    func lineageExists(
+        id: Int64
+    ) async throws -> Bool {
+        let rows = try await app.postgres.query(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM patch_lineages
+                WHERE id = \(id)
+            )
+            """,
+            logger: app.logger
+        )
+
+        for try await row in rows {
+            return try row.decode(Bool.self)
+        }
+
+        return false
+    }
 }
 
 @Test("Change-id links independent patch revisions")
@@ -1449,13 +1581,13 @@ func linksPatchRevisionsBySubjectAndAuthor()
             let first = try fixture.message(
                 number: 1,
                 subject:
-                    "[PATCH v1 net] net: repair path",
+                    "[PATCH v1 net] \(fixture.prefix): repair path",
                 body: body
             )
             let second = try fixture.message(
                 number: 2,
                 subject:
-                    "[PATCH v2 net] net: repair path",
+                    "[PATCH v2 net] \(fixture.prefix): repair path",
                 dateHeader:
                     "Thu, 20 Aug 2026 12:00:00 -0400",
                 body: body

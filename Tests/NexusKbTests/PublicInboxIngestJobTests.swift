@@ -4,6 +4,43 @@ import Testing
 
 @Suite("Public-inbox ingest job tests")
 struct PublicInboxIngestJobTests {
+    @Test("Patch lineage backfill preserves its fixed target")
+    func patchLineageBackfillContinuation() throws {
+        let sentAt = Date(
+            timeIntervalSince1970: 1_800_000_000
+        )
+        let initial = RebuildPatchLineagesJob
+            .Payload(batchSize: 250)
+        let cursor = RebuildPatchLineagesJob
+            .Cursor(
+                sentAt: sentAt,
+                patchSetID: 42
+            )
+        let successor = initial.successor(
+            targetPatchSetID: 10_000,
+            cursor: cursor
+        )
+
+        #expect(initial.targetPatchSetID == nil)
+        #expect(initial.cursor == nil)
+        #expect(
+            successor.targetPatchSetID == 10_000
+        )
+        #expect(successor.cursor == cursor)
+
+        let legacy = Data(
+            #"{"batchSize":64}"#.utf8
+        )
+        let decoded = try JSONDecoder().decode(
+            RebuildPatchLineagesJob.Payload.self,
+            from: legacy
+        )
+
+        #expect(decoded.batchSize == 64)
+        #expect(decoded.targetPatchSetID == nil)
+        #expect(decoded.cursor == nil)
+    }
+
     @Test("Epoch payload advances one target at a time")
     func advancesOneEpochAtATime() {
         let targets = (0..<3).map {

@@ -24,7 +24,7 @@ struct ReadAPIIntegrationTests {
 
             try await app.testing().test(
                 .GET,
-                "/api/v1/threads?limit=1"
+                "/api/v1/threads?limit=1&q=\(fixture.searchToken)"
             ) { response async throws in
                 #expect(response.status == .ok)
                 let value = try response.content.decode(
@@ -178,12 +178,16 @@ struct ReadAPIIntegrationTests {
 private final class ReadAPIIntegrationFixture {
     let app: Application
     let rootMessageID: String
+    let searchToken: String
     let threadID: Int64
+    let companionThreadID: Int64
 
     init(app: Application) async throws {
         self.app = app
         self.rootMessageID =
             "read-api-\(UUID().uuidString)@example.com"
+        self.searchToken =
+            "readapi\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
         let sentAt = Date(
             timeIntervalSince1970:
                 4_102_444_800
@@ -197,7 +201,7 @@ private final class ReadAPIIntegrationFixture {
             )
             VALUES (
                 \(rootMessageID),
-                'Read API fixture',
+                \(searchToken),
                 \(sentAt)
             )
             RETURNING id
@@ -215,6 +219,38 @@ private final class ReadAPIIntegrationFixture {
         self.threadID = try #require(
             insertedThreadID
         )
+        let companionRootMessageID =
+            "read-api-companion-\(UUID().uuidString)@example.com"
+        let companionSentAt = sentAt.addingTimeInterval(
+            -1
+        )
+        let companionRows = try await app.postgres.query(
+            """
+            INSERT INTO threads (
+                root_message_id,
+                subject,
+                last_updated_at
+            )
+            VALUES (
+                \(companionRootMessageID),
+                \(searchToken),
+                \(companionSentAt)
+            )
+            RETURNING id
+            """,
+            logger: app.logger
+        )
+        var insertedCompanionThreadID: Int64?
+
+        for try await row in companionRows {
+            insertedCompanionThreadID = try row.decode(
+                Int64.self
+            )
+        }
+
+        self.companionThreadID = try #require(
+            insertedCompanionThreadID
+        )
         let messageRows = try await app.postgres.query(
             """
             INSERT INTO messages (
@@ -229,9 +265,17 @@ private final class ReadAPIIntegrationFixture {
                 \(rootMessageID),
                 \(threadID),
                 'Read API <read-api@example.com>',
-                'Read API fixture',
+                \(searchToken),
                 \(sentAt),
                 'Fixture body'
+            ),
+            (
+                \(companionRootMessageID),
+                \(companionThreadID),
+                'Read API <read-api@example.com>',
+                \(searchToken),
+                \(companionSentAt),
+                'Companion fixture body'
             )
             """,
             logger: app.logger
@@ -244,7 +288,10 @@ private final class ReadAPIIntegrationFixture {
         let rows = try await app.postgres.query(
             """
             DELETE FROM threads
-            WHERE id = \(threadID)
+            WHERE id IN (
+                \(threadID),
+                \(companionThreadID)
+            )
             """,
             logger: app.logger
         )

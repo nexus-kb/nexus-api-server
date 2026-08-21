@@ -106,6 +106,8 @@ struct PostgresIngestService: Sendable {
 
         var recipientsByMessageDatabaseID: [Int64: [ResolvedBatchRecipient]] = [:]
 
+        var affectedPatchSetIDs: Set<Int64> = []
+
         mutating func remapThread(
             from sourceThreadID: Int64,
             to targetThreadID: Int64
@@ -334,6 +336,14 @@ struct PostgresIngestService: Sendable {
                     )
                 )
             }
+
+            try await reconcilePatchLineages(
+                candidatePatchSetIDs:
+                    batchState
+                    .affectedPatchSetIDs,
+                connection: connection,
+                logger: logger
+            )
 
             try await persistMailingListLinks(
                 linksByMessageDatabaseID:
@@ -643,12 +653,9 @@ struct PostgresIngestService: Sendable {
             )
 
         if let patchSetID {
-            try await PostgresPatchLineageService()
-                .reconcile(
-                    patchSetID: patchSetID,
-                    connection: connection,
-                    logger: logger
-                )
+            batchState.affectedPatchSetIDs.insert(
+                patchSetID
+            )
         }
 
         batchState
@@ -670,6 +677,46 @@ struct PostgresIngestService: Sendable {
             messageDatabaseID,
             targetThreadID
         )
+    }
+
+    private func reconcilePatchLineages(
+        candidatePatchSetIDs: Set<Int64>,
+        connection: PostgresConnection,
+        logger: Logger
+    ) async throws {
+        guard !candidatePatchSetIDs.isEmpty else {
+            return
+        }
+
+        let rows = try await connection.query(
+            """
+            SELECT id
+            FROM patchsets
+            WHERE id = ANY(
+                    \(candidatePatchSetIDs.sorted())::bigint[]
+                  )
+            ORDER BY
+                sent_at ASC NULLS FIRST,
+                id ASC
+            """,
+            logger: logger
+        )
+        var patchSetIDs: [Int64] = []
+
+        for try await row in rows {
+            patchSetIDs.append(
+                try row.decode(Int64.self)
+            )
+        }
+
+        for patchSetID in patchSetIDs {
+            _ = try await PostgresPatchLineageService()
+                .reconcile(
+                    patchSetID: patchSetID,
+                    connection: connection,
+                    logger: logger
+                )
+        }
     }
 
     private func ensureThread(
@@ -999,17 +1046,17 @@ struct PostgresIngestService: Sendable {
 
         let patchSetRows = try await connection.query(
             """
-            SELECT DISTINCT patchset.id
+            SELECT patchset.id
             FROM patchsets AS patchset
-            LEFT JOIN patches AS patch
-              ON patch.patchset_id = patchset.id
-            WHERE patchset.cover_letter_message_id
-                    = ANY(
-                        \(orphanMessageIDs)::text[]
-                    )
-               OR patch.message_id = ANY(
-                    \(orphanMessageIDs)::text[]
-                  )
+            WHERE patchset.cover_letter_message_id =
+                    ANY(\(orphanMessageIDs)::text[])
+
+            UNION
+
+            SELECT patch.patchset_id
+            FROM patches AS patch
+            WHERE patch.message_id =
+                    ANY(\(orphanMessageIDs)::text[])
             """,
             logger: logger
         )

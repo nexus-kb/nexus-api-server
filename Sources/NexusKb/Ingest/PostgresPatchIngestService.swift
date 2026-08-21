@@ -32,6 +32,9 @@ struct PostgresPatchIngestService: Sendable {
         let totalParts: Int32
         let receivedParts: Int32
         let subjectIndex: Int32
+        let containsIncomingPatch: Bool
+        let hasPartIndexCollision: Bool
+        let anchorMessageID: String?
     }
     
     func persist(
@@ -169,13 +172,7 @@ struct PostgresPatchIngestService: Sendable {
                 == parsed.message.messageID
 
             let isPatchDuplicate =
-                try await containsPatch(
-                    patchSetID: candidate.id,
-                    messageID:
-                        parsed.message.messageID,
-                    connection: connection,
-                    logger: logger
-                )
+                candidate.containsIncomingPatch
 
             if candidate.receivedParts
                     >= candidate.totalParts,
@@ -222,15 +219,22 @@ struct PostgresPatchIngestService: Sendable {
                 continue
             }
 
-            guard try await !hasIndexCollision(
-                candidate: candidate,
-                messageID:
-                    parsed.message.messageID,
-                partIndex:
-                    parsed.patch.partIndex,
-                connection: connection,
-                logger: logger
-            ) else {
+            let hasIndexCollision: Bool
+
+            if parsed.patch.partIndex == 0 {
+                hasIndexCollision =
+                    candidate.subjectIndex == 0
+                    && candidate
+                        .coverLetterMessageID != nil
+                    && candidate
+                        .coverLetterMessageID
+                        != parsed.message.messageID
+            } else {
+                hasIndexCollision =
+                    candidate.hasPartIndexCollision
+            }
+
+            guard !hasIndexCollision else {
                 continue
             }
 
@@ -276,11 +280,9 @@ struct PostgresPatchIngestService: Sendable {
                 }
 
                 let existingPrefix =
-                    try await messageIDPrefix(
-                        candidate: candidate,
-                        connection: connection,
-                        logger: logger
-                    )
+                    candidate.anchorMessageID.map(
+                        messageIDPrefix
+                    ) ?? ""
 
                 let newPrefix = messageIDPrefix(
                     parsed.message.messageID
@@ -326,7 +328,13 @@ struct PostgresPatchIngestService: Sendable {
                 ps.sent_at,
                 ps.total_parts,
                 ps.received_parts,
-                ps.subject_index
+                ps.subject_index,
+                true,
+                false,
+                COALESCE(
+                    ps.cover_letter_message_id,
+                    patch.message_id
+                )
             FROM patchsets AS ps
             JOIN patches AS patch
               ON patch.patchset_id = ps.id
@@ -356,28 +364,71 @@ struct PostgresPatchIngestService: Sendable {
 
         let rows = try await connection.query(
             """
-            SELECT
-                id,
-                thread_id,
-                cover_letter_message_id,
-                subject,
-                author,
-                sent_at,
-                total_parts,
-                received_parts,
-                subject_index
-            FROM patchsets
-            WHERE thread_id = \(threadID)
-               OR cover_letter_message_id
-                    = \(coverLetterMessageID)
-               OR (
-                    author =
+            WITH candidate_ids AS (
+                SELECT id
+                FROM patchsets
+                WHERE thread_id = \(threadID)
+
+                UNION
+
+                SELECT id
+                FROM patchsets
+                WHERE cover_letter_message_id =
+                        \(coverLetterMessageID)
+
+                UNION
+
+                SELECT id
+                FROM patchsets
+                WHERE author =
                         \(parsed.authorDisplayString)
-                    AND sent_at BETWEEN
+                  AND sent_at BETWEEN
                         \(start) AND \(end)
-               )
-            ORDER BY id
-            FOR UPDATE
+            )
+            SELECT
+                patchset.id,
+                patchset.thread_id,
+                patchset.cover_letter_message_id,
+                patchset.subject,
+                patchset.author,
+                patchset.sent_at,
+                patchset.total_parts,
+                patchset.received_parts,
+                patchset.subject_index,
+                EXISTS (
+                    SELECT 1
+                    FROM patches AS patch
+                    WHERE patch.patchset_id =
+                            patchset.id
+                      AND patch.message_id =
+                            \(parsed.message.messageID)
+                ),
+                EXISTS (
+                    SELECT 1
+                    FROM patches AS patch
+                    WHERE patch.patchset_id =
+                            patchset.id
+                      AND patch.part_index =
+                            \(parsed.patch.partIndex)
+                      AND patch.message_id <>
+                            \(parsed.message.messageID)
+                ),
+                COALESCE(
+                    patchset.cover_letter_message_id,
+                    (
+                        SELECT patch.message_id
+                        FROM patches AS patch
+                        WHERE patch.patchset_id =
+                                patchset.id
+                        ORDER BY patch.part_index
+                        LIMIT 1
+                    )
+                )
+            FROM patchsets AS patchset
+            JOIN candidate_ids AS candidate
+              ON candidate.id = patchset.id
+            ORDER BY patchset.id
+            FOR UPDATE OF patchset
             """,
             logger: logger
         )
@@ -395,7 +446,10 @@ struct PostgresPatchIngestService: Sendable {
                     Date?,
                     Int32,
                     Int32,
-                    Int32
+                    Int32,
+                    Bool,
+                    Bool,
+                    String?
                 ).self
             )
 
@@ -409,7 +463,12 @@ struct PostgresPatchIngestService: Sendable {
                     sentAt: value.5,
                     totalParts: value.6,
                     receivedParts: value.7,
-                    subjectIndex: value.8
+                    subjectIndex: value.8,
+                    containsIncomingPatch:
+                        value.9,
+                    hasPartIndexCollision:
+                        value.10,
+                    anchorMessageID: value.11
                 )
             )
         }
@@ -431,7 +490,10 @@ struct PostgresPatchIngestService: Sendable {
                     Date?,
                     Int32,
                     Int32,
-                    Int32
+                    Int32,
+                    Bool,
+                    Bool,
+                    String?
                 ).self
             )
 
@@ -444,7 +506,12 @@ struct PostgresPatchIngestService: Sendable {
                 sentAt: value.5,
                 totalParts: value.6,
                 receivedParts: value.7,
-                subjectIndex: value.8
+                subjectIndex: value.8,
+                containsIncomingPatch:
+                    value.9,
+                hasPartIndexCollision:
+                    value.10,
+                anchorMessageID: value.11
             )
         }
 
@@ -738,81 +805,28 @@ struct PostgresPatchIngestService: Sendable {
     ) async throws {
         try await execute(
             """
+            WITH patch_count AS (
+                SELECT count(*)::integer AS value
+                FROM patches
+                WHERE patchset_id = \(patchSetID)
+            )
             UPDATE patchsets
             SET
-                received_parts = (
-                    SELECT count(*)::integer
-                    FROM patches
-                    WHERE patchset_id =
-                        \(patchSetID)
-                ),
+                received_parts = patch_count.value,
                 status = CASE
                     WHEN \(malformed)
                     THEN 'Malformed'
                     WHEN status = 'Malformed'
                     THEN status
-                    WHEN (
-                        SELECT count(*)
-                        FROM patches
-                        WHERE patchset_id =
-                            \(patchSetID)
-                    ) >= total_parts
+                    WHEN patch_count.value >=
+                            total_parts
                     THEN 'Complete'
                     ELSE 'Incomplete'
                 END,
                 updated_at = now()
+            FROM patch_count
             WHERE id = \(patchSetID)
             """,
-            connection: connection,
-            logger: logger
-        )
-    }
-
-    private func containsPatch(
-        patchSetID: Int64,
-        messageID: String,
-        connection: PostgresConnection,
-        logger: Logger
-    ) async throws -> Bool {
-        let rows = try await connection.query(
-            """
-            SELECT EXISTS (
-                SELECT 1
-                FROM patches
-                WHERE patchset_id =
-                        \(patchSetID)
-                  AND message_id =
-                        \(messageID)
-            )
-            """,
-            logger: logger
-        )
-
-        for try await row in rows {
-            return try row.decode(Bool.self)
-        }
-
-        return false
-    }
-
-    private func hasIndexCollision(
-        candidate: Candidate,
-        messageID: String,
-        partIndex: Int32,
-        connection: PostgresConnection,
-        logger: Logger
-    ) async throws -> Bool {
-        if partIndex == 0 {
-            return candidate.subjectIndex == 0
-                && candidate.coverLetterMessageID != nil
-                && candidate.coverLetterMessageID
-                    != messageID
-        }
-
-        return try await hasPatchIndexCollision(
-            patchSetID: candidate.id,
-            messageID: messageID,
-            partIndex: partIndex,
             connection: connection,
             logger: logger
         )
@@ -868,38 +882,6 @@ struct PostgresPatchIngestService: Sendable {
         }
 
         return nil
-    }
-
-    private func messageIDPrefix(
-        candidate: Candidate,
-        connection: PostgresConnection,
-        logger: Logger
-    ) async throws -> String {
-        if let cover = candidate
-            .coverLetterMessageID
-        {
-            return messageIDPrefix(cover)
-        }
-
-        let rows = try await connection.query(
-            """
-            SELECT message_id
-            FROM patches
-            WHERE patchset_id =
-                \(candidate.id)
-            ORDER BY part_index
-            LIMIT 1
-            """,
-            logger: logger
-        )
-
-        for try await row in rows {
-            return messageIDPrefix(
-                try row.decode(String.self)
-            )
-        }
-
-        return ""
     }
 
     private func messageIDPrefix(
