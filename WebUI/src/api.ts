@@ -1,6 +1,8 @@
 import type {
   MailingListResponse,
   MessageDetail,
+  PatchLineage,
+  PatchLineageCollectionResponse,
   ThreadDetail,
   ThreadListResponse,
   ThreadMessagesResponse,
@@ -117,4 +119,21 @@ export function getThreadMessages(
 
 export function getMessage(messageID: string, signal?: AbortSignal): Promise<MessageDetail> {
   return fetchJSON(`/api/v1/messages/${encodeMessageID(messageID)}`, signal);
+}
+
+export function getPatchLineage(
+  lineageID: number,
+  signal?: AbortSignal,
+): Promise<PatchLineage> {
+  return fetchJSON("/api/v1/patch-lineages/" + lineageID, signal);
+}
+
+export function getThreadPatchLineages(
+  rootMessageID: string,
+  signal?: AbortSignal,
+): Promise<PatchLineageCollectionResponse> {
+  return fetchJSON(
+    "/api/v1/threads/" + encodeMessageID(rootMessageID) + "/patch-lineages",
+    signal,
+  );
 }

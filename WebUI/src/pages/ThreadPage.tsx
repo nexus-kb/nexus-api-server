@@ -8,7 +8,13 @@ import {
   createSignal,
   onCleanup,
 } from "solid-js";
-import { getMessage, getThread, getThreadMessages } from "../api";
+import {
+  getMessage,
+  getThread,
+  getThreadMessages,
+  getThreadPatchLineages,
+  threadRoute,
+} from "../api";
 import { absoluteDate, displayAuthor, displaySubject, plural, relativeDate } from "../format";
 import { buildThreadTree, mergeMessages, type ThreadTreeNode } from "../threadTree";
 import type { MessageDetail, ThreadMessageSummary } from "../types";
@@ -25,6 +31,17 @@ function mailboxList(mailboxes: MessageDetail["to"]): string {
   return mailboxes
     .map((mailbox) => (mailbox.name ? `${mailbox.name} <${mailbox.email}>` : mailbox.email))
     .join(", ");
+}
+
+function revisionLabel(
+  phase: "RFC" | "PATCH",
+  revision: number,
+  revisionExplicit: boolean,
+  isResend: boolean,
+): string {
+  const version = revisionExplicit || revision > 1 ? " v" + revision : "";
+  const resend = isResend ? " RESEND" : "";
+  return phase + version + resend;
 }
 
 interface MessageNodeProps {
@@ -147,8 +164,12 @@ export function ThreadPage() {
   const [searchParams] = useSearchParams();
   const rootMessageID = () => firstParameter(searchParams.root)?.trim() || undefined;
   const [pageData, { refetch }] = createResource(rootMessageID, async (root) => {
-    const [thread, messagePage] = await Promise.all([getThread(root), getThreadMessages(root)]);
-    return { thread, messagePage };
+    const [thread, messagePage, lineagePage] = await Promise.all([
+      getThread(root),
+      getThreadMessages(root),
+      getThreadPatchLineages(root),
+    ]);
+    return { thread, messagePage, lineagePage };
   });
   const [messages, setMessages] = createSignal<ThreadMessageSummary[]>([]);
   const [nextCursor, setNextCursor] = createSignal<string | null>(null);
@@ -329,6 +350,37 @@ export function ThreadPage() {
       <Show when={pageData()}>
         {(data) => (
           <>
+            <For each={data().lineagePage.items}>
+              {(lineage) => (
+                <section class="lineage-summary" aria-label="Patch lineage">
+                  <div class="lineage-eyebrow">
+                    Patch lineage · {plural(lineage.revisions.length, "version")}
+                  </div>
+                  <h1>{lineage.subject}</h1>
+                  <nav class="lineage-revisions" aria-label="Patch versions">
+                    <For each={lineage.revisions}>
+                      {(revision) => (
+                        <A
+                          class="lineage-revision"
+                          classList={{
+                            active: revision.rootMessageId === rootMessageID(),
+                          }}
+                          href={threadRoute(revision.rootMessageId)}
+                        >
+                          {revisionLabel(
+                            revision.phase,
+                            revision.revision,
+                            revision.revisionExplicit,
+                            revision.isResend,
+                          )}
+                        </A>
+                      )}
+                    </For>
+                  </nav>
+                </section>
+              )}
+            </For>
+
             <header class="thread-heading">
               <h1 id="thread-heading">{displaySubject(data().thread.subject)}</h1>
               <div class="thread-detail-meta">

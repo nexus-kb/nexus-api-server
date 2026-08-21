@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   encodeMessageID,
+  getThreadPatchLineages,
   getThreads,
   threadListURL,
   threadRoute,
@@ -55,6 +56,25 @@ describe("API URL helpers", () => {
 
     await expect(getThreads()).rejects.toEqual(
       new ApiError(400, "Invalid pagination cursor"),
+    );
+  });
+
+  it("encodes thread IDs for lineage lookup", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getThreadPatchLineages(
+      "root/path@example.com"
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/threads/root%2Fpath%40example.com/patch-lineages",
+      expect.anything(),
     );
   });
 });

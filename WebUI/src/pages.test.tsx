@@ -6,6 +6,7 @@ import { ThreadListPage } from "./pages/ThreadListPage";
 import { ThreadPage } from "./pages/ThreadPage";
 import type {
   MessageDetail,
+  PatchLineageCollectionResponse,
   ThreadDetail,
   ThreadListResponse,
   ThreadMessagesResponse,
@@ -214,6 +215,58 @@ describe("ThreadPage", () => {
       patch: null,
       loreUrl: "https://lore.kernel.org/r/child",
     };
+    const lineages: PatchLineageCollectionResponse = {
+      items: [
+        {
+          id: 41,
+          subject: "net: repair the packet path",
+          firstSentAt: "2026-08-14T12:00:00Z",
+          latestSentAt: thread.startedAt,
+          revisions: [
+            {
+              patchsetId: 102,
+              rootMessageId: thread.rootMessageId,
+              coverLetterMessageId: thread.rootMessageId,
+              subject: thread.subject!,
+              author: thread.author,
+              sentAt: thread.startedAt,
+              status: "complete",
+              totalParts: 2,
+              receivedParts: 2,
+              phase: "PATCH",
+              revision: 2,
+              revisionExplicit: true,
+              isResend: false,
+              changeId: "packet-path",
+              baseCommit: null,
+              matchSource: "change-id",
+              matchConfidence: 100,
+              mailingLists: thread.mailingLists,
+            },
+            {
+              patchsetId: 101,
+              rootMessageId: "v1@example.com",
+              coverLetterMessageId: "v1@example.com",
+              subject: "[PATCH] net: repair the packet path",
+              author: thread.author,
+              sentAt: "2026-08-14T12:00:00Z",
+              status: "complete",
+              totalParts: 2,
+              receivedParts: 2,
+              phase: "PATCH",
+              revision: 1,
+              revisionExplicit: false,
+              isResend: false,
+              changeId: "packet-path",
+              baseCommit: null,
+              matchSource: "change-id",
+              matchConfidence: 100,
+              mailingLists: thread.mailingLists,
+            },
+          ],
+        },
+      ],
+    };
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/messages?")) {
@@ -225,6 +278,9 @@ describe("ThreadPage", () => {
         return Promise.resolve(
           jsonResponse(url.includes("child%40example.com") ? childDetail : detail),
         );
+      }
+      if (url.endsWith("/patch-lineages")) {
+        return Promise.resolve(jsonResponse(lineages));
       }
       if (url.startsWith("/api/v1/threads/")) {
         return Promise.resolve(jsonResponse(thread));
@@ -241,6 +297,12 @@ describe("ThreadPage", () => {
     ));
 
     expect(await screen.findByText("Full root message body")).toBeInTheDocument();
+    expect(screen.getByText("Patch lineage · 2 versions")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "PATCH v2" })).toHaveClass("active");
+    expect(screen.getByRole("link", { name: "PATCH" })).toHaveAttribute(
+      "href",
+      expect.stringContaining("v1%40example.com"),
+    );
     expect(screen.queryByText("Root message preview")).not.toBeInTheDocument();
     expect(screen.queryByText("[message unavailable]", { exact: false })).not.toBeInTheDocument();
     expect(screen.queryByText("patch 0/2")).not.toBeInTheDocument();

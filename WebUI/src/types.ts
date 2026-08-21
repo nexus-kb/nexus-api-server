@@ -93,3 +93,41 @@ export interface MessageDetail {
 export interface MailingListResponse {
   items: MailingList[];
 }
+
+export interface PatchLineageRevision {
+  patchsetId: number;
+  rootMessageId: string;
+  coverLetterMessageId: string | null;
+  subject: string;
+  author: string | null;
+  sentAt: string | null;
+  status: string;
+  totalParts: number;
+  receivedParts: number;
+  phase: "RFC" | "PATCH";
+  revision: number;
+  revisionExplicit: boolean;
+  isResend: boolean;
+  changeId: string | null;
+  baseCommit: string | null;
+  matchSource:
+    | "singleton"
+    | "change-id"
+    | "reply-chain"
+    | "subject-author"
+    | "manual";
+  matchConfidence: number;
+  mailingLists: MailingList[];
+}
+
+export interface PatchLineage {
+  id: number;
+  subject: string;
+  firstSentAt: string | null;
+  latestSentAt: string | null;
+  revisions: PatchLineageRevision[];
+}
+
+export interface PatchLineageCollectionResponse {
+  items: PatchLineage[];
+}

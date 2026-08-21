@@ -1,5 +1,7 @@
 @testable import NexusKb
 import Foundation
+import PostgresNIO
+import Vapor
 import VaporTesting
 import Testing
 
@@ -10,6 +12,12 @@ struct ReadAPIIntegrationTests {
         try await withApp(
             configure: configure
         ) { app in
+            let fixture =
+                try await ReadAPIIntegrationFixture(
+                    app: app
+                )
+
+            do {
             var firstThread: ThreadSummaryView?
             var firstPage: ThreadListView?
             var firstMessage: ThreadMessageSummaryView?
@@ -88,12 +96,16 @@ struct ReadAPIIntegrationTests {
                 )
             }
 
-            guard let firstThread else {
-                return
-            }
+            let requiredThread = try #require(
+                firstThread
+            )
+            #expect(
+                requiredThread.rootMessageId
+                    == fixture.rootMessageID
+            )
 
             let encoded = try #require(
-                firstThread.rootMessageId
+                requiredThread.rootMessageId
                     .addingPercentEncoding(
                         withAllowedCharacters:
                             .readAPIPathAllowed
@@ -110,7 +122,7 @@ struct ReadAPIIntegrationTests {
                 )
                 #expect(
                     value.rootMessageId
-                        == firstThread.rootMessageId
+                        == requiredThread.rootMessageId
                 )
             }
 
@@ -149,11 +161,95 @@ struct ReadAPIIntegrationTests {
                     )
                     #expect(
                         value.rootMessageId
-                            == firstThread.rootMessageId
+                            == requiredThread.rootMessageId
                     )
                 }
             }
+            } catch {
+                try? await fixture.remove()
+                throw error
+            }
+
+            try await fixture.remove()
         }
+    }
+}
+
+private final class ReadAPIIntegrationFixture {
+    let app: Application
+    let rootMessageID: String
+    let threadID: Int64
+
+    init(app: Application) async throws {
+        self.app = app
+        self.rootMessageID =
+            "read-api-\(UUID().uuidString)@example.com"
+        let sentAt = Date(
+            timeIntervalSince1970:
+                4_102_444_800
+        )
+        let rows = try await app.postgres.query(
+            """
+            INSERT INTO threads (
+                root_message_id,
+                subject,
+                last_updated_at
+            )
+            VALUES (
+                \(rootMessageID),
+                'Read API fixture',
+                \(sentAt)
+            )
+            RETURNING id
+            """,
+            logger: app.logger
+        )
+        var insertedThreadID: Int64?
+
+        for try await row in rows {
+            insertedThreadID = try row.decode(
+                Int64.self
+            )
+        }
+
+        self.threadID = try #require(
+            insertedThreadID
+        )
+        let messageRows = try await app.postgres.query(
+            """
+            INSERT INTO messages (
+                message_id,
+                thread_id,
+                author,
+                subject,
+                sent_at,
+                body
+            )
+            VALUES (
+                \(rootMessageID),
+                \(threadID),
+                'Read API <read-api@example.com>',
+                'Read API fixture',
+                \(sentAt),
+                'Fixture body'
+            )
+            """,
+            logger: app.logger
+        )
+
+        for try await _ in messageRows {}
+    }
+
+    func remove() async throws {
+        let rows = try await app.postgres.query(
+            """
+            DELETE FROM threads
+            WHERE id = \(threadID)
+            """,
+            logger: app.logger
+        )
+
+        for try await _ in rows {}
     }
 }
 

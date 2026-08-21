@@ -633,7 +633,7 @@ struct PostgresIngestService: Sendable {
             threadID: targetThreadID
         )
 
-        try await PostgresPatchIngestService()
+        let patchSetID = try await PostgresPatchIngestService()
             .persist(
                 parsed: parsed,
                 threadID: targetThreadID,
@@ -641,6 +641,15 @@ struct PostgresIngestService: Sendable {
                 connection: connection,
                 logger: logger
             )
+
+        if let patchSetID {
+            try await PostgresPatchLineageService()
+                .reconcile(
+                    patchSetID: patchSetID,
+                    connection: connection,
+                    logger: logger
+                )
+        }
 
         batchState
             .mailingListBlobOIDByMessageDatabaseID[

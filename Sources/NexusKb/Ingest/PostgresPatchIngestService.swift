@@ -40,9 +40,9 @@ struct PostgresPatchIngestService: Sendable {
         timestamp: Date,
         connection: PostgresConnection,
         logger: Logger
-    ) async throws {
+    ) async throws -> Int64? {
         guard parsed.patch.isPatchOrCover else {
-            return
+            return nil
         }
 
         let message = parsed.message
@@ -123,6 +123,8 @@ struct PostgresPatchIngestService: Sendable {
             connection: connection,
             logger: logger
         )
+
+        return patchSetID
     }
     
     private func matchingCandidates(

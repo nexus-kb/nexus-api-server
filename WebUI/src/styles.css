@@ -412,6 +412,53 @@ p {
   margin-bottom: 10px;
 }
 
+.lineage-summary {
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+}
+
+.lineage-summary h1 {
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+  font-size: 1.05rem;
+}
+
+.lineage-eyebrow {
+  border-bottom: 1px solid var(--border-light);
+  padding: 8px 12px;
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.lineage-revisions {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  border-top: 1px solid var(--border-light);
+  padding: 0 10px;
+}
+
+.lineage-revision {
+  flex: none;
+  border-bottom: 2px solid transparent;
+  padding: 9px 8px 7px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.lineage-revision:hover,
+.lineage-revision.active {
+  border-bottom-color: var(--link);
+  color: var(--text);
+}
+
 .thread-heading {
   margin-bottom: 14px;
   padding-bottom: 10px;

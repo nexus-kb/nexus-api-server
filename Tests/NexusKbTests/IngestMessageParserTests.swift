@@ -190,3 +190,76 @@ func projectsTimezoneAwareDateAsAbsoluteDate() throws {
 
     #expect(parsed.message.date == expected)
 }
+
+@Test("Patch lineage metadata parses b4 fields")
+func parsesPatchLineageMetadata() {
+    let value = PatchLineageMetadataParser.parse(
+        subject:
+            "Re: [PATCHv4 RESEND net-next 0/3] net: repair packet path",
+        body:
+            """
+            Cover letter.
+
+            prerequisite-change-id: unrelated-series:v2
+            change-id: packet-path-20260821-a1b2c3
+            base-commit: 0123456789abcdef
+            """
+    )
+
+    #expect(value.phase == .patch)
+    #expect(value.revision == 4)
+    #expect(value.revisionExplicit)
+    #expect(value.isResend)
+    #expect(
+        value.displaySubject
+            == "net: repair packet path"
+    )
+    #expect(
+        value.normalizedSubject
+            == "net: repair packet path"
+    )
+    #expect(
+        value.changeID
+            == "packet-path-20260821-a1b2c3"
+    )
+    #expect(
+        value.baseCommit
+            == "0123456789abcdef"
+    )
+}
+
+@Test("Patch lineage metadata distinguishes inferred RFC revision")
+func parsesInferredRFCRevision() {
+    let value = PatchLineageMetadataParser.parse(
+        subject:
+            "[RFC memory-management]  MM:   New allocator ",
+        body: ""
+    )
+
+    #expect(value.phase == .rfc)
+    #expect(value.revision == 1)
+    #expect(!value.revisionExplicit)
+    #expect(!value.isResend)
+    #expect(
+        value.displaySubject
+            == "MM: New allocator"
+    )
+    #expect(
+        value.normalizedSubject
+            == "mm: new allocator"
+    )
+}
+
+@Test("Patch lineage metadata preserves non-leading brackets")
+func preservesMeaningfulSubjectBrackets() {
+    let value = PatchLineageMetadataParser.parse(
+        subject:
+            "[PATCH v2] docs: explain array[index]",
+        body: ""
+    )
+
+    #expect(
+        value.displaySubject
+            == "docs: explain array[index]"
+    )
+}

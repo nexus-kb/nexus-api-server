@@ -34,6 +34,9 @@ func configure(_ app: Application) async throws {
     app.queues.add(
         IngestPublicInboxEpochJob()
     )
+    app.queues.add(
+        RebuildPatchLineagesJob()
+    )
     
     // register routes
     try routes(app)

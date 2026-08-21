@@ -11,6 +11,12 @@ private struct StartPublicInboxIngestRequest:
     let scanAll: Bool?
 }
 
+private struct RebuildPatchLineagesRequest:
+    Content
+{
+    let batchSize: Int?
+}
+
 func routes(_ app: Application) throws {
     app.get { req async throws -> Response in
         try await req.fileio.asyncStreamFile(
@@ -102,6 +108,36 @@ func routes(_ app: Application) throws {
         return .accepted
     }
 
+    app.post(
+        "jobs",
+        "patch-lineages",
+        "rebuild"
+    ) { req async throws -> HTTPStatus in
+        let input = try req.content.decode(
+            RebuildPatchLineagesRequest.self
+        )
+        let batchSize = input.batchSize ?? 250
+
+        guard RebuildPatchLineagesJob
+                .batchSizeRange
+                .contains(batchSize)
+        else {
+            throw Abort(
+                .badRequest,
+                reason:
+                    "batchSize must be between 1 and 1000"
+            )
+        }
+
+        try await req.queue.dispatch(
+            RebuildPatchLineagesJob.self,
+            .init(batchSize: batchSize),
+            maxRetryCount: 3
+        )
+
+        return .accepted
+    }
+
     let api = app.grouped(
         "api",
         "v1"
@@ -112,10 +148,19 @@ func routes(_ app: Application) throws {
         MessageController()
     let referenceDataController =
         ReferenceDataController()
+    let patchLineageController =
+        PatchLineageController()
 
     api.get(
         "threads",
         use: threadController.index
+    )
+
+    api.get(
+        "threads",
+        ":rootMessageID",
+        "patch-lineages",
+        use: patchLineageController.forThread
     )
 
     api.get(
@@ -135,6 +180,12 @@ func routes(_ app: Application) throws {
         "messages",
         ":messageID",
         use: messageController.show
+    )
+
+    api.get(
+        "patch-lineages",
+        ":lineageID",
+        use: patchLineageController.show
     )
 
     api.get(

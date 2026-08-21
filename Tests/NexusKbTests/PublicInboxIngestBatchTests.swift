@@ -587,6 +587,14 @@ private struct TestThreadMetadata {
     let lastUpdatedAt: Date
 }
 
+private struct TestLineageState {
+    let lineageID: Int64
+    let source: String
+    let phase: String
+    let revision: Int32
+    let changeID: String?
+}
+
 private final class DatabaseFixture {
     let app: Application
     let prefix: String
@@ -1169,6 +1177,328 @@ private final class DatabaseFixture {
         }
 
         return 0
+    }
+
+    func lineageState(
+        messageID: String
+    ) async throws -> TestLineageState? {
+        let rows = try await app.postgres.query(
+            """
+            SELECT
+                state.lineage_id,
+                state.match_source,
+                state.phase,
+                state.revision,
+                state.change_id
+            FROM patchset_lineage_state AS state
+            JOIN patchsets AS patchset
+              ON patchset.id = state.patchset_id
+            LEFT JOIN patches AS patch
+              ON patch.patchset_id = patchset.id
+            WHERE patchset.cover_letter_message_id =
+                    \(messageID)
+               OR patch.message_id = \(messageID)
+            ORDER BY state.patchset_id
+            LIMIT 1
+            """,
+            logger: app.logger
+        )
+
+        for try await row in rows {
+            let value = try row.decode(
+                (
+                    Int64,
+                    String,
+                    String,
+                    Int32,
+                    String?
+                ).self
+            )
+
+            return TestLineageState(
+                lineageID: value.0,
+                source: value.1,
+                phase: value.2,
+                revision: value.3,
+                changeID: value.4
+            )
+        }
+
+        return nil
+    }
+}
+
+@Test("Change-id links independent patch revisions")
+func linksPatchRevisionsByChangeID() async throws {
+    try await withApp(
+        configure: configure
+    ) { app in
+        let fixture = try await DatabaseFixture(
+            app: app
+        )
+
+        do {
+            let body =
+                """
+                Change description.
+
+                change-id: nexus-lineage-change
+                base-commit: 0123456789abcdef
+
+                diff --git a/file b/file
+                --- a/file
+                +++ b/file
+                @@ -1 +1 @@
+                -old
+                +new
+                """
+            let first = try fixture.message(
+                number: 1,
+                subject:
+                    "[PATCH v1] net: repair path",
+                body: body
+            )
+            let second = try fixture.message(
+                number: 2,
+                subject:
+                    "[PATCH v2] net: repair path",
+                dateHeader:
+                    "Thu, 20 Aug 2026 12:00:00 -0400",
+                body: body
+            )
+
+            _ = try await PostgresIngestService(
+                client: app.postgres
+            ).ingestBatch(
+                [first, second],
+                mailingListID:
+                    fixture.mailingListID,
+                epoch: fixture.epoch,
+                expectedPreviousCommitOID: nil,
+                logger: app.logger
+            )
+
+            let firstState = try #require(
+                try await fixture.lineageState(
+                    messageID:
+                        first.parsed.message.messageID
+                )
+            )
+            let secondState = try #require(
+                try await fixture.lineageState(
+                    messageID:
+                        second.parsed.message.messageID
+                )
+            )
+
+            #expect(
+                firstState.lineageID
+                    == secondState.lineageID
+            )
+            #expect(
+                secondState.source == "change-id"
+            )
+            #expect(secondState.phase == "PATCH")
+            #expect(secondState.revision == 2)
+            #expect(
+                secondState.changeID
+                    == "nexus-lineage-change"
+            )
+
+            try await app.testing().test(
+                .GET,
+                "/api/v1/patch-lineages/\(secondState.lineageID)"
+            ) { response async throws in
+                #expect(response.status == .ok)
+                let value = try response.content.decode(
+                    PatchLineageDetailView.self
+                )
+                #expect(value.revisions.count == 2)
+                #expect(
+                    value.revisions.map(\.revision)
+                        == [2, 1]
+                )
+            }
+
+            let rootMessageID =
+                second.parsed.message.messageID
+
+            try await app.testing().test(
+                .GET,
+                "/api/v1/threads/\(rootMessageID)/patch-lineages"
+            ) { response async throws in
+                #expect(response.status == .ok)
+                let value = try response.content.decode(
+                    PatchLineageCollectionView.self
+                )
+                #expect(value.items.count == 1)
+                #expect(
+                    value.items.first?.id
+                        == secondState.lineageID
+                )
+            }
+        } catch {
+            try? await fixture.remove()
+            throw error
+        }
+
+        try await fixture.remove()
+    }
+}
+
+@Test("Direct reroll reply links a renamed revision")
+func linksPatchRevisionsByReplyChain() async throws {
+    try await withApp(
+        configure: configure
+    ) { app in
+        let fixture = try await DatabaseFixture(
+            app: app
+        )
+
+        do {
+            let body =
+                """
+                diff --git a/file b/file
+                --- a/file
+                +++ b/file
+                @@ -1 +1 @@
+                -old
+                +new
+                """
+            let first = try fixture.message(
+                number: 1,
+                subject:
+                    "[RFC v1] mm: prototype allocator",
+                body: body
+            )
+            let second = try fixture.message(
+                number: 2,
+                inReplyTo:
+                    first.parsed.message.messageID,
+                subject:
+                    "[PATCH v1] mm: introduce allocator",
+                dateHeader:
+                    "Thu, 20 Aug 2026 12:00:00 -0400",
+                body: body
+            )
+
+            _ = try await PostgresIngestService(
+                client: app.postgres
+            ).ingestBatch(
+                [first, second],
+                mailingListID:
+                    fixture.mailingListID,
+                epoch: fixture.epoch,
+                expectedPreviousCommitOID: nil,
+                logger: app.logger
+            )
+
+            let firstState = try #require(
+                try await fixture.lineageState(
+                    messageID:
+                        first.parsed.message.messageID
+                )
+            )
+            let secondState = try #require(
+                try await fixture.lineageState(
+                    messageID:
+                        second.parsed.message.messageID
+                )
+            )
+
+            #expect(
+                firstState.lineageID
+                    == secondState.lineageID
+            )
+            #expect(
+                secondState.source
+                    == "reply-chain"
+            )
+            #expect(firstState.phase == "RFC")
+            #expect(secondState.phase == "PATCH")
+        } catch {
+            try? await fixture.remove()
+            throw error
+        }
+
+        try await fixture.remove()
+    }
+}
+
+@Test("Subject and author link unthreaded revisions")
+func linksPatchRevisionsBySubjectAndAuthor()
+    async throws
+{
+    try await withApp(
+        configure: configure
+    ) { app in
+        let fixture = try await DatabaseFixture(
+            app: app
+        )
+
+        do {
+            let body =
+                """
+                diff --git a/file b/file
+                --- a/file
+                +++ b/file
+                @@ -1 +1 @@
+                -old
+                +new
+                """
+            let first = try fixture.message(
+                number: 1,
+                subject:
+                    "[PATCH v1 net] net: repair path",
+                body: body
+            )
+            let second = try fixture.message(
+                number: 2,
+                subject:
+                    "[PATCH v2 net] net: repair path",
+                dateHeader:
+                    "Thu, 20 Aug 2026 12:00:00 -0400",
+                body: body
+            )
+
+            _ = try await PostgresIngestService(
+                client: app.postgres
+            ).ingestBatch(
+                [first, second],
+                mailingListID:
+                    fixture.mailingListID,
+                epoch: fixture.epoch,
+                expectedPreviousCommitOID: nil,
+                logger: app.logger
+            )
+
+            let firstState = try #require(
+                try await fixture.lineageState(
+                    messageID:
+                        first.parsed.message.messageID
+                )
+            )
+            let secondState = try #require(
+                try await fixture.lineageState(
+                    messageID:
+                        second.parsed.message.messageID
+                )
+            )
+
+            #expect(
+                firstState.lineageID
+                    == secondState.lineageID
+            )
+            #expect(
+                secondState.source
+                    == "subject-author"
+            )
+        } catch {
+            try? await fixture.remove()
+            throw error
+        }
+
+        try await fixture.remove()
     }
 }
 
