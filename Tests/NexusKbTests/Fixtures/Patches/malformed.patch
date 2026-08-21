@@ -1,0 +1,8 @@
+broken hunk counts
+
+---
+diff --git a/kernel/broken.c b/kernel/broken.c
+--- a/kernel/broken.c
++++ b/kernel/broken.c
+@@ -1,2 +1,2 @@ static int broken(void)
+ return 0;

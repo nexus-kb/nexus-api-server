@@ -108,6 +108,8 @@ extension Application {
             await client.run()
         }
 
+        await Task.yield()
+
         storage[PostgresClientKey.self] = client
         lifecycle.use(PostgresClientLifecycle(runTask: runTask))
 

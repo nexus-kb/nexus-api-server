@@ -1,0 +1,12 @@
+> fs: sample: quoted review copy
+>
+> Keep this quoted patch parseable in review replies.
+>
+> Signed-off-by: Kernel Developer <developer@example.com>
+> ---
+> --- a/fs/sample.c
+> +++ b/fs/sample.c
+> @@ -4,2 +4,2 @@ int sample_open(void)
+> -	return old_open();
+> +	return new_open();
+>  }

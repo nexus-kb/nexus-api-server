@@ -1,0 +1,7 @@
+docs: rename obsolete API document
+
+---
+diff --git a/Documentation/core-api/old-name.rst b/Documentation/core-api/new-name.rst
+similarity index 100%
+rename from Documentation/core-api/old-name.rst
+rename to Documentation/core-api/new-name.rst

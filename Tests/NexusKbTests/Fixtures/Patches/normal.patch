@@ -1,0 +1,22 @@
+net: sample: handle worker startup failure
+
+Return the helper error instead of discarding it.
+
+Fixes: 123456789abc ("net: sample: add worker")
+Signed-off-by: Kernel Developer <developer@example.com>
+---
+ drivers/net/sample.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/sample.c b/drivers/net/sample.c
+index 111111111111..222222222222 100644
+--- a/drivers/net/sample.c
++++ b/drivers/net/sample.c
+@@ -10,3 +10,4 @@ static int worker_start(struct device *dev)
+ {
+-	return old_helper(dev);
++	int ret = new_helper(dev);
++	return ret;
+ }
+-- 
+2.47.0

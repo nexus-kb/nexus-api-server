@@ -1,0 +1,136 @@
+Received: from mail-pf1-f169.google.com (mail-pf1-f169.google.com [209.85.210.169])
+	(using TLSv1.2 with cipher ECDHE-RSA-AES128-GCM-SHA256 (128/128 bits))
+	(No client certificate requested)
+	by smtp.subspace.kernel.org (Postfix) with ESMTPS id 26E9F374A0E
+	for <linux-kernel@vger.kernel.org>; Thu, 20 Aug 2026 14:47:00 +0000 (UTC)
+Authentication-Results: smtp.subspace.kernel.org; arc=none smtp.client-ip=209.85.210.169
+ARC-Seal:i=1; a=rsa-sha256; d=subspace.kernel.org; s=arc-20240116;
+	t=1787237222; cv=none; b=Cn5+ZCLyIzXLZoCDBkggjWz0yi6ghfuv2/WaCRUHUG15zgWmTgos0h7q6epQzPiifm3fqFsdJrp4sq7yBguhMYfeiEmOj3zl29FVuEAt7Ol9uEceVBFyU8ciJYdBJd82dSzH4Yb+PNVMtItRiDsnuR7m66R9z9ejOCla8S0uNlc=
+ARC-Message-Signature:i=1; a=rsa-sha256; d=subspace.kernel.org;
+	s=arc-20240116; t=1787237222; c=relaxed/simple;
+	bh=Ftej52SklxTXozfvmwOfHn0CtfseigpuDEQMNnD7W1o=;
+	h=From:To:Cc:Subject:Date:Message-ID:In-Reply-To:References:
+	 MIME-Version; b=Om3LJtg3QLH9I9SRbbFY0YuMJuTn6rNgMNo47Ywod405U7GtQYRXGG6PtIoPW7KNuivs9tErbaoTcSnQpxtB/MAdaEpCp9hry76Xewx+np1eYK8yNXF58vtoq9ZWEbcEOIukw5B2KUi5rYRYUfEX1y68j1LGyz4Cs6UUFKbexpc=
+ARC-Authentication-Results:i=1; smtp.subspace.kernel.org; dmarc=pass (p=none dis=none) header.from=gmail.com; spf=pass smtp.mailfrom=gmail.com; dkim=pass (2048-bit key) header.d=gmail.com header.i=@gmail.com header.b=bD+YaKOD; arc=none smtp.client-ip=209.85.210.169
+Authentication-Results: smtp.subspace.kernel.org; dmarc=pass (p=none dis=none) header.from=gmail.com
+Authentication-Results: smtp.subspace.kernel.org; spf=pass smtp.mailfrom=gmail.com
+Authentication-Results: smtp.subspace.kernel.org;
+	dkim=pass (2048-bit key) header.d=gmail.com header.i=@gmail.com header.b="bD+YaKOD"
+Received: by mail-pf1-f169.google.com with SMTP id d2e1a72fcca58-84e04df8c46so2181841b3a.2
+        for <linux-kernel@vger.kernel.org>; Thu, 20 Aug 2026 07:47:00 -0700 (PDT)
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed;
+        d=gmail.com; s=20251104; t=1787237220; x=1787842020; darn=vger.kernel.org;
+        h=content-transfer-encoding:mime-version:references:in-reply-to
+         :message-id:date:subject:cc:to:from:from:to:cc:subject:date
+         :message-id:reply-to:content-type;
+        bh=LVfSuQvXyLuniL2nm4D/+95VYDhWOHF3K6aMyMIHSIs=;
+        b=bD+YaKOD5w8N0E+d55NiVMfaAAqJLscptEtGsl7naB4ynkmGwgm/mLDoeLch/LZbjb
+         PFITIi8an1ba2ps7CaxgC8Ur1Xf7+0KrnbpN1Pn3KUtpxCibBGTFs6FQ3ssf2b1g9Ni+
+         L0X0ToTeGcFhxinFdhd1AgDbaXVEi9g99PVjJrII28wkGBz+tyr/lmk0tO2Rm2HEIifz
+         Y58vBbnvjJ9TPjuK9mON80K/aPyf5EISpCTPMxCXXwXXsnDKwFiuRncVOS/UK1czDYVk
+         Tysd6+iSxWJ1mUgqjy9cnFm4eSJdawCIJqYw9NX4tPJ6BwsE306xDjtF1Tx7xjtIjfWw
+         M68w==
+X-Google-DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed;
+        d=1e100.net; s=20251104; t=1787237220; x=1787842020;
+        h=content-transfer-encoding:mime-version:references:in-reply-to
+         :message-id:date:subject:cc:to:from:x-gm-gg:x-gm-message-state:from
+         :to:cc:subject:date:message-id:reply-to:content-type;
+        bh=LVfSuQvXyLuniL2nm4D/+95VYDhWOHF3K6aMyMIHSIs=;
+        b=FqPbgGVVj8ImyDLzJLNo72iwXIwdUBnXMldlGL4h2D1RKvxJRfg4Ayi/G32MaYjFdI
+         Igrl00ANju/0s4eCGZhgjsfB0+lSm2Or8RrGEjMzXMsudlt6OKCaQn3+IR6pK2IwHyeJ
+         aCU29WnBM3WjIILLGlYlb6th5rQFZ4hAN/0e3SP0mv0e+Wuh2RvWC343KYR+O2qeVFpj
+         U/KC8Fc3uMbEERZ6jDPwQG1qZZ8jiYPjm8hQVG9enGT9ovtjZFIggnsS6rjpiq1iMYtE
+         4rNVTH2lDJOKA3RX3zalH4TlIWop+aQtoLvhJc4718EoZT+MWGKvnW39Cc9DmXWS27Gq
+         lUXg==
+X-Forwarded-Encrypted: i=1; AHgh+RpCSMeu1Kzw03hLg5qvGhxeuHJAuPKQxWyiZoI13ZTBE5riPIbicXT/Qpnysoe3C8fKgFHT8NjZdAogwgc=@vger.kernel.org
+X-Gm-Message-State: AOJu0YzuNSqQxhussNG/lgBpP9NV7GHV7PuRxAJ0mWdbw2jhEUVf/EDb
+	8lT9dqW9e9nbyQyY66Gk0ZrOqHvM1NYSk362bSWEZtRnd54775EvfbYl
+X-Gm-Gg: AR+sD11VkLM0GmGsC84LEz+WRoJUOOtUoq8GOSDLfa22QZ5dHERfw64m9/7Ehh7Slxz
+	C1RuDBqyAOqzhDmoALw7MQ+HNInU7scMhr8IvfkfAFsPpZ589NB73/p53IYyfdrbJSkfdC2Lusk
+	3EJoerC1xu04onTSwIK6sbQzVlZmzI41/uGsX0Cs6NjRex8YXr9sxEpYVrMLH9F/etN3gl4UtnJ
+	wmmJ1b0TkW5VWGjIB1mMu7r5qsMof2rdFHadiA2OxXzmG1UE0N8dPbhacl8NtcmQ0ZqPQdlLDBf
+	iBwcPl/TkU082u5noK/ZK2k04QBt3pX112AaUfqvZxikyitr4AGHLOi+DpYiSSYLsp+8OdbjvVl
+	Zc+wuO4SkAT+N1wzNDTjP0WptYiV8wnC0n13syR5JQwHXUqUMK6Hd87N1Nslu/1dX6TdsFmaJBC
+	co2V8KKFp/t1Esl1HlQBgXNgIgmYoKn/BQSrGPodA6g/EK+c3GzZ+c1yf80/0RNerK+PVw1Ph/w
+	w==
+X-Received: by 2002:a05:6a00:2d8f:b0:84f:dfce:966b with SMTP id d2e1a72fcca58-851d387fed3mr21945328b3a.8.1787237220112;
+        Thu, 20 Aug 2026 07:47:00 -0700 (PDT)
+Received: from localhost ([220.196.228.78])
+        by smtp.gmail.com with ESMTPSA id d2e1a72fcca58-851d3640a4bsm1800099b3a.42.2026.08.20.07.46.59
+        (version=TLS1_3 cipher=TLS_AES_256_GCM_SHA384 bits=256/256);
+        Thu, 20 Aug 2026 07:46:59 -0700 (PDT)
+From: Liang Hao <haohlliang@gmail.com>
+To: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
+Cc: Anna-Maria Behnsen <anna-maria@linutronix.de>,
+	Frederic Weisbecker <frederic@kernel.org>,
+	Thomas Gleixner <tglx@kernel.org>,
+	Jonathan Corbet <corbet@lwn.net>,
+	Shuah Khan <skhan@linuxfoundation.org>,
+	Randy Dunlap <rdunlap@infradead.org>,
+	Clark Williams <clrkwllms@kernel.org>,
+	Steven Rostedt <rostedt@goodmis.org>,
+	linux-kernel@vger.kernel.org,
+	linux-doc@vger.kernel.org,
+	linux-rt-devel@lists.linux.dev,
+	Liang Hao <haohlliang@gmail.com>
+Subject: [PATCH v5] docs: real-time: mention the hrtimer sleeper HARD path
+Date: Thu, 20 Aug 2026 22:46:55 +0800
+Message-ID: <20260820144655.22492-1-haohlliang@gmail.com>
+X-Mailer: git-send-email 2.50.1
+In-Reply-To: <20260820082114.QIiSu8n5@linutronix.de>
+References: <20260820082114.QIiSu8n5@linutronix.de>
+Precedence: bulk
+X-Mailing-List: linux-kernel@vger.kernel.org
+List-Id: <linux-kernel.vger.kernel.org>
+List-Subscribe: <mailto:linux-kernel+subscribe@vger.kernel.org>
+List-Unsubscribe: <mailto:linux-kernel+unsubscribe@vger.kernel.org>
+MIME-Version: 1.0
+Content-Transfer-Encoding: 8bit
+
+The Timers section documents the PREEMPT_RT softirq default and
+HRTIMER_MODE_HARD, but not the sleeper helper used by userspace sleeps.
+Describe that path, and rename "ktimersd" to "ktimers" to match
+ksoftirqd naming in this document.
+
+No code or behaviour change.
+
+Signed-off-by: Liang Hao <haohlliang@gmail.com>
+---
+Thanks!
+
+v4 -> v5:
+- use "ktimers" instead of "ktimers/%u"
+- replace the sleeper paragraph with wording suggested by Sebastian
+
+ Documentation/core-api/real-time/differences.rst | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/core-api/real-time/differences.rst b/Documentation/core-api/real-time/differences.rst
+index a129570dab5a..04be5789b5fc 100644
+--- a/Documentation/core-api/real-time/differences.rst
++++ b/Documentation/core-api/real-time/differences.rst
+@@ -119,12 +119,20 @@ timers initialized with the HRTIMER_MODE_SOFT flag, which are executed in
+ softirq context.
+ 
+ On a PREEMPT_RT kernel, this behavior is reversed: hrtimers are executed in
+-softirq context by default, typically within the ktimersd thread. This thread
++softirq context by default, typically within the ktimers thread. This thread
+ runs at the lowest real-time priority, ensuring it executes before any
+ SCHED_OTHER tasks but does not interfere with higher-priority real-time
+ threads. To explicitly request execution in hard interrupt context on
+ PREEMPT_RT, the timer must be marked with the HRTIMER_MODE_HARD flag.
+ 
++Userland sleepers usually deploy a hrtimer to guarantee a precise wakeup
++time. The timer is initialized with hrtimer_setup_sleeper_on_stack(), which
++distinguishes between real-time and regular tasks. The hrtimer of a task
++without a real-time priority is initialized with HRTIMER_MODE_SOFT, but for
++real-time priorities HRTIMER_MODE_HARD is used. This ensures that real-time
++tasks are woken up as soon as possible while ordinary tasks cannot block the
++CPU with a thundering herd of wakeups.
++
+ Memory allocation
+ -----------------
+ 
+-- 
+2.50.1 (Apple Git-155)
+

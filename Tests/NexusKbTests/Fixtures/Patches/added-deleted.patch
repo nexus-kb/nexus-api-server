@@ -1,0 +1,25 @@
+samples: replace legacy helper
+
+---
+diff --git a/samples/legacy.c b/samples/legacy.c
+deleted file mode 100644
+index 333333333333..000000000000
+--- a/samples/legacy.c
++++ /dev/null
+@@ -1,4 +0,0 @@
+-int legacy_helper(void)
+-{
+-	return 0;
+-}
+\ No newline at end of file
+diff --git a/samples/current.c b/samples/current.c
+new file mode 100644
+index 000000000000..444444444444
+--- /dev/null
++++ b/samples/current.c
+@@ -0,0 +1,4 @@
++int current_helper(void)
++{
++	return 0;
++}
+\ No newline at end of file

@@ -1,0 +1,241 @@
+Received: from mail-wm1-f42.google.com (mail-wm1-f42.google.com [209.85.128.42])
+	(using TLSv1.2 with cipher ECDHE-RSA-AES128-GCM-SHA256 (128/128 bits))
+	(No client certificate requested)
+	by smtp.subspace.kernel.org (Postfix) with ESMTPS id 0AD45448D16
+	for <linux-kernel@vger.kernel.org>; Tue, 18 Aug 2026 09:54:07 +0000 (UTC)
+Authentication-Results: smtp.subspace.kernel.org; arc=none smtp.client-ip=209.85.128.42
+ARC-Seal:i=1; a=rsa-sha256; d=subspace.kernel.org; s=arc-20240116;
+	t=1787046850; cv=none; b=MTXw9vRqt068wvbqvClFYpyQ2CrUeMgGNkY5xBrCjiAAyyecxsdST829B/TvTCXI9keZlWoF6J/vkPj+LpnTDm08NkcfUgYvLguMA88eUt5DfLcIgpV97i5oimET4fl3YwzM4mnJjuPkmMW4K9ndtMf3Jlc6IV+D7u+EgF/ZIYM=
+ARC-Message-Signature:i=1; a=rsa-sha256; d=subspace.kernel.org;
+	s=arc-20240116; t=1787046850; c=relaxed/simple;
+	bh=k70H5zdd7+S15FBfLgT1gaKICQLJS7uW1Ku8mwNL0xM=;
+	h=From:To:Subject:Date:Message-ID:MIME-Version; b=RTkmknDcSt6lQmig/I8rQ2XW1SQde6DpXj72bdCCp4ld0iJX9Wp6vhvdJ2i8Kkil6Vbglzc15ySxwcJzbcr+YfM9mIsjqqJ3nowjSfGfQfSlCSoKFIGDk6HIAzdzJC14YtN5UqIx5xhrX87p/FEVGMrI+1PVt1npeWVg5ni3uLo=
+ARC-Authentication-Results:i=1; smtp.subspace.kernel.org; dmarc=pass (p=none dis=none) header.from=gmail.com; spf=pass smtp.mailfrom=gmail.com; dkim=pass (2048-bit key) header.d=gmail.com header.i=@gmail.com header.b=c2glR04q; arc=none smtp.client-ip=209.85.128.42
+Authentication-Results: smtp.subspace.kernel.org; dmarc=pass (p=none dis=none) header.from=gmail.com
+Authentication-Results: smtp.subspace.kernel.org; spf=pass smtp.mailfrom=gmail.com
+Authentication-Results: smtp.subspace.kernel.org;
+	dkim=pass (2048-bit key) header.d=gmail.com header.i=@gmail.com header.b="c2glR04q"
+Received: by mail-wm1-f42.google.com with SMTP id 5b1f17b1804b1-495590dde14so54883855e9.0
+        for <linux-kernel@vger.kernel.org>; Tue, 18 Aug 2026 02:54:07 -0700 (PDT)
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed;
+        d=gmail.com; s=20251104; t=1787046846; x=1787651646; darn=vger.kernel.org;
+        h=content-transfer-encoding:mime-version:message-id:date:subject:to
+         :from:from:to:cc:subject:date:message-id:reply-to:content-type;
+        bh=FscDInh7KKRFq1aEsYnmjA7ZMfxSiv5sNertgxwbW8A=;
+        b=c2glR04qLUXlOIgZaPnmN4gyqgMDiGah7+TUUyTC5lRJq7rqyW8SgyhJVl6UXGHFOh
+         iDJNEno4ip9IZRlsc1hjfHC0GwmDIjA9TS//JXsuV6/JHc4nuzSsDdN+Hl1ZC3Hp1jRJ
+         USMxltQDmO6seTxPsXLsDmmNqX47Kp936AkF9TKyEKcqy0BsUCiqo5IPKrLiDFkBmVr2
+         Re8tnK8WoZikk2cQ6HiJml1VbQyL9xkH66UzLIPj5u4UZpNX0jb0Z5xknOcNOysf55JO
+         5rSUrZwMn/E9fg2t9BkgnbVWdrOY3Wq0wVewg8PoJH5Xo9PRjWMJBRIHYL5JebxceiJl
+         Sk3Q==
+X-Google-DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed;
+        d=1e100.net; s=20251104; t=1787046846; x=1787651646;
+        h=content-transfer-encoding:mime-version:message-id:date:subject:to
+         :from:x-gm-gg:x-gm-message-state:from:to:cc:subject:date:message-id
+         :reply-to:content-type;
+        bh=FscDInh7KKRFq1aEsYnmjA7ZMfxSiv5sNertgxwbW8A=;
+        b=iVelFeTUVy++Qkv3dVBB6hQjpQvUyuIQYYb7DgoJPRgnz59Jdq8SQeWzRCPMvOFnU4
+         6vrKvbGRngF46vHaB4NoeGc9M8wu700GlCa7do5yJCLYmASfzHimTwmtN0q3tWmmbkMk
+         HingCFEcQsQPQIv48hlq98zZEz7bEDFwcZz4VwQmNqdPsCbgeT6E6IdwamIdq9J86Irq
+         TeFX5Ww2NNGIYP/4S45lOCgXOpSRtqKNdtEf13jd9urHcTbCK+xqPP2WMG6XGtbY03E6
+         ER1f/rRfTMmLqvcGSWhkosEbFF+bwZWbDxilVYM7s/RX+XjYC+aHmYBWmY/Qf8VJTTMK
+         MlmQ==
+X-Forwarded-Encrypted: i=1; AHgh+RrOa5C5Un4WvaI76EP60qaP0GKhOc6NzxUhVwfX2imppD3HmMlTkhj232FCCNHDVe5S777i7tVliDoMvNw=@vger.kernel.org
+X-Gm-Message-State: AOJu0YxOSlxlQ6AqjKyqHP8OqIHxlsusE8d8DXhEqKEVE2FYRryYq9lD
+	ceAG34tYI9w+GgnEBV2+iC5tXdU5qxfGCphUsQP1VnGL7FYgm1caBO/+
+X-Gm-Gg: AR+sD12Q4y6iFhBqmV5ZcicfKrFzDD480yQGStCBf5gePxB/pD+cbdYstBYlOps2l3e
+	bWRaT5o/hevmrYC26+pYXwDxx9RoeKMyaA37MVQtBC7zIdDnIeWvWR9O5TqACuI7Yvq9fvUmxrW
+	LjMx4afZvYRMEjGYI7CwMueKAQaPBT5jd8THjpRYEpfAz/b60srNbxOYdXaPgfXMoKOo6wFJYaT
+	jZe8lT3evQC5iCciQJSoE55q6L3uypbz5FmXDt0osGmtEEf2ClkJalvU6TJXOQV3hsAKrn6FZ8K
+	UAoRhVZYjB1JbgsGlBnVgzdgd0vmzwpYi03+JQXkxmDFO28Z54jIls9t29tFEGESS+cOtoukANb
+	cSUF4BwqatyJ54NA45rcMtclddMdYzx3wHKMipVeJO9eH9s5nDEEhl0IfUl0UeLewQMG7xpKyyc
+	AkjWOVQmNnG8TrKtKUqCRPEqMmBb05m7/SFxiSfjbU3bXNIndjZgh+vJ2WSKguK8qT8YU0L5c9D
+	csQp9yxk1D0hJpy1gOL8EGuALo8Z0qBec+8vh5DAv52nEsaEQDt5irxs6U=
+X-Received: by 2002:a05:600c:6296:b0:498:519:e660 with SMTP id 5b1f17b1804b1-4999fb07d28mr121602585e9.4.1787046846022;
+        Tue, 18 Aug 2026 02:54:06 -0700 (PDT)
+Received: from Ansuel-XPS24.localdomain (host-87-21-27-15.retail.telecomitalia.it. [87.21.27.15])
+        by smtp.googlemail.com with ESMTPSA id 5b1f17b1804b1-49996109652sm295630245e9.4.2026.08.18.02.54.04
+        (version=TLS1_3 cipher=TLS_AES_256_GCM_SHA384 bits=256/256);
+        Tue, 18 Aug 2026 02:54:05 -0700 (PDT)
+From: Christian Marangi <ansuelsmth@gmail.com>
+To: Vinod Koul <vkoul@kernel.org>,
+	Neil Armstrong <neil.armstrong@linaro.org>,
+	Lorenzo Bianconi <lorenzo@kernel.org>,
+	Christian Marangi <ansuelsmth@gmail.com>,
+	linux-kernel@vger.kernel.org,
+	linux-phy@lists.infradead.org,
+	linux-arm-kernel@lists.infradead.org
+Subject: [PATCH] phy: move and rename Airoha PCIe PHY driver to dedicated directory
+Date: Tue, 18 Aug 2026 11:53:50 +0200
+Message-ID: <20260818095355.18898-1-ansuelsmth@gmail.com>
+X-Mailer: git-send-email 2.53.0
+Precedence: bulk
+X-Mailing-List: linux-kernel@vger.kernel.org
+List-Id: <linux-kernel.vger.kernel.org>
+List-Subscribe: <mailto:linux-kernel+subscribe@vger.kernel.org>
+List-Unsubscribe: <mailto:linux-kernel+unsubscribe@vger.kernel.org>
+MIME-Version: 1.0
+Content-Transfer-Encoding: 8bit
+
+To keep the generic PHY directory tidy, move the PCIe PHY driver for
+Airoha AN7581 SoC to a dedicated directory.
+
+Also rename the driver and add the relevant SoC name to the .c and .h
+file in preparation for support of PCIe and USB PHY driver for Airoha
+AN7583 SoC that use a completely different implementation and
+calibration for PHYs and will have their own dedicated drivers.
+
+The rename permits to better identify the specific usage of the driver
+in the future once the airoha PHY directory will have multiple driver
+for multiple SoC.
+
+The config is changed from PHY_AIROHA_PCIE to PHY_AIROHA_AN7581_PCIE.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Acked-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ MAINTAINERS                                         |  4 ++--
+ drivers/phy/Kconfig                                 | 11 +----------
+ drivers/phy/Makefile                                |  4 ++--
+ drivers/phy/airoha/Kconfig                          | 13 +++++++++++++
+ drivers/phy/airoha/Makefile                         |  3 +++
+ .../phy-an7581-pcie-regs.h}                         |  0
+ .../{phy-airoha-pcie.c => airoha/phy-an7581-pcie.c} |  6 +++---
+ 7 files changed, 24 insertions(+), 17 deletions(-)
+ create mode 100644 drivers/phy/airoha/Kconfig
+ create mode 100644 drivers/phy/airoha/Makefile
+ rename drivers/phy/{phy-airoha-pcie-regs.h => airoha/phy-an7581-pcie-regs.h} (100%)
+ rename drivers/phy/{phy-airoha-pcie.c => airoha/phy-an7581-pcie.c} (99%)
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 04db742696ac..e2703d1a737b 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -765,8 +765,8 @@ M:	Lorenzo Bianconi <lorenzo@kernel.org>
+ L:	linux-arm-kernel@lists.infradead.org (moderated for non-subscribers)
+ S:	Maintained
+ F:	Documentation/devicetree/bindings/phy/airoha,en7581-pcie-phy.yaml
+-F:	drivers/phy/phy-airoha-pcie-regs.h
+-F:	drivers/phy/phy-airoha-pcie.c
++F:	drivers/phy/airoha/phy-an7581-pcie-regs.h
++F:	drivers/phy/airoha/phy-an7581-pcie.c
+ 
+ AIROHA SPI SNFI DRIVER
+ M:	Lorenzo Bianconi <lorenzo@kernel.org>
+diff --git a/drivers/phy/Kconfig b/drivers/phy/Kconfig
+index 19f3b7d12b7d..e93951a4a898 100644
+--- a/drivers/phy/Kconfig
++++ b/drivers/phy/Kconfig
+@@ -46,16 +46,6 @@ config GENERIC_PHY_MIPI_DPHY
+ 	  Provides a number of helpers a core functions for MIPI D-PHY
+ 	  drivers to us.
+ 
+-config PHY_AIROHA_PCIE
+-	tristate "Airoha PCIe-PHY Driver"
+-	depends on ARCH_AIROHA || COMPILE_TEST
+-	depends on OF
+-	select GENERIC_PHY
+-	help
+-	  Say Y here to add support for Airoha PCIe PHY driver.
+-	  This driver create the basic PHY instance and provides initialize
+-	  callback for PCIe GEN3 port.
+-
+ config PHY_CAN_TRANSCEIVER
+ 	tristate "CAN transceiver PHY"
+ 	select GENERIC_PHY
+@@ -168,6 +158,7 @@ config PHY_XGENE
+ 	help
+ 	  This option enables support for APM X-Gene SoC multi-purpose PHY.
+ 
++source "drivers/phy/airoha/Kconfig"
+ source "drivers/phy/allwinner/Kconfig"
+ source "drivers/phy/amlogic/Kconfig"
+ source "drivers/phy/apple/Kconfig"
+diff --git a/drivers/phy/Makefile b/drivers/phy/Makefile
+index d7aa516bcc49..4ca4a07963fc 100644
+--- a/drivers/phy/Makefile
++++ b/drivers/phy/Makefile
+@@ -7,7 +7,6 @@ obj-$(CONFIG_PHY_COMMON_PROPS)		+= phy-common-props.o
+ obj-$(CONFIG_PHY_COMMON_PROPS_TEST)	+= phy-common-props-test.o
+ obj-$(CONFIG_GENERIC_PHY)		+= phy-core.o
+ obj-$(CONFIG_GENERIC_PHY_MIPI_DPHY)	+= phy-core-mipi-dphy.o
+-obj-$(CONFIG_PHY_AIROHA_PCIE)		+= phy-airoha-pcie.o
+ obj-$(CONFIG_PHY_CAN_TRANSCEIVER)	+= phy-can-transceiver.o
+ obj-$(CONFIG_PHY_ECONET_PCIE)		+= phy-econet-pcie.o
+ obj-$(CONFIG_PHY_EYEQ5_ETH)		+= phy-eyeq5-eth.o
+@@ -20,7 +19,8 @@ obj-$(CONFIG_PHY_PISTACHIO_USB)		+= phy-pistachio-usb.o
+ obj-$(CONFIG_PHY_SNPS_EUSB2)		+= phy-snps-eusb2.o
+ obj-$(CONFIG_PHY_XGENE)			+= phy-xgene.o
+ 
+-obj-$(CONFIG_GENERIC_PHY)		+= allwinner/	\
++obj-$(CONFIG_GENERIC_PHY)		+= airoha/	\
++					   allwinner/	\
+ 					   amlogic/	\
+ 					   apple/	\
+ 					   axiado/	\
+diff --git a/drivers/phy/airoha/Kconfig b/drivers/phy/airoha/Kconfig
+new file mode 100644
+index 000000000000..9a1b625a7701
+--- /dev/null
++++ b/drivers/phy/airoha/Kconfig
+@@ -0,0 +1,13 @@
++# SPDX-License-Identifier: GPL-2.0-only
++#
++# Phy drivers for Airoha devices
++#
++config PHY_AIROHA_AN7581_PCIE
++	tristate "Airoha AN7581 PCIe-PHY Driver"
++	depends on ARCH_AIROHA || COMPILE_TEST
++	depends on OF
++	select GENERIC_PHY
++	help
++	  Say Y here to add support for Airoha AN7581 PCIe PHY driver.
++	  This driver create the basic PHY instance and provides initialize
++	  callback for PCIe GEN3 port.
+diff --git a/drivers/phy/airoha/Makefile b/drivers/phy/airoha/Makefile
+new file mode 100644
+index 000000000000..912f3e11a061
+--- /dev/null
++++ b/drivers/phy/airoha/Makefile
+@@ -0,0 +1,3 @@
++# SPDX-License-Identifier: GPL-2.0
++
++obj-$(CONFIG_PHY_AIROHA_AN7581_PCIE)	+= phy-an7581-pcie.o
+diff --git a/drivers/phy/phy-airoha-pcie-regs.h b/drivers/phy/airoha/phy-an7581-pcie-regs.h
+similarity index 100%
+rename from drivers/phy/phy-airoha-pcie-regs.h
+rename to drivers/phy/airoha/phy-an7581-pcie-regs.h
+diff --git a/drivers/phy/phy-airoha-pcie.c b/drivers/phy/airoha/phy-an7581-pcie.c
+similarity index 99%
+rename from drivers/phy/phy-airoha-pcie.c
+rename to drivers/phy/airoha/phy-an7581-pcie.c
+index 56e9ade8a9fd..81ddf0e7638b 100644
+--- a/drivers/phy/phy-airoha-pcie.c
++++ b/drivers/phy/airoha/phy-an7581-pcie.c
+@@ -13,7 +13,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/slab.h>
+ 
+-#include "phy-airoha-pcie-regs.h"
++#include "phy-an7581-pcie-regs.h"
+ 
+ #define LEQ_LEN_CTRL_MAX_VAL	7
+ #define FREQ_LOCK_MAX_ATTEMPT	10
+@@ -1279,12 +1279,12 @@ MODULE_DEVICE_TABLE(of, airoha_pcie_phy_of_match);
+ static struct platform_driver airoha_pcie_phy_driver = {
+ 	.probe	= airoha_pcie_phy_probe,
+ 	.driver	= {
+-		.name = "airoha-pcie-phy",
++		.name = "airoha-an7581-pcie-phy",
+ 		.of_match_table = airoha_pcie_phy_of_match,
+ 	},
+ };
+ module_platform_driver(airoha_pcie_phy_driver);
+ 
+-MODULE_DESCRIPTION("Airoha PCIe PHY driver");
++MODULE_DESCRIPTION("Airoha AN7581 PCIe PHY driver");
+ MODULE_AUTHOR("Lorenzo Bianconi <lorenzo@kernel.org>");
+ MODULE_LICENSE("GPL");
+-- 
+2.53.0
+

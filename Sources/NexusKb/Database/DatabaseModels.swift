@@ -108,6 +108,63 @@ struct PatchRecord: Sendable {
     let createdAt: Date
 }
 
+struct PatchEnrichmentRunRecord: Sendable {
+    let id: Int64
+    let patchID: Int64
+    let extractorVersion: String
+    let createdAt: Date
+    let completedAt: Date
+}
+
+struct PatchDiffFileRecord: Sendable {
+    let id: Int64
+    let patchID: Int64
+    let enrichmentRunID: Int64
+    let extractorVersion: String
+    let fileIndex: Int32
+    let oldPath: String?
+    let newPath: String?
+    let operation: PatchFileOperation
+    let diffHeader: String
+    let headerLines: [String]
+    let trailingLines: [String]
+}
+
+struct PatchDiffHunkRecord: Sendable {
+    let id: Int64
+    let patchID: Int64
+    let enrichmentRunID: Int64
+    let extractorVersion: String
+    let fileID: Int64
+    let hunkIndex: Int32
+    let oldRange: PatchLineRange
+    let newRange: PatchLineRange
+    let sectionHeader: String?
+    let rawHeader: String
+}
+
+struct PatchSymbolObservationRecord: Sendable {
+    let id: Int64
+    let patchID: Int64
+    let enrichmentRunID: Int64
+    let extractorVersion: String
+    let fileID: Int64
+    let hunkID: Int64
+    let observation: PatchSymbolObservation
+}
+
+struct PatchEnrichmentPersistenceSummary:
+    Sendable,
+    Equatable
+{
+    let runID: Int64
+    let patchID: Int64
+    let extractorVersion: String
+    let fileCount: Int
+    let hunkCount: Int
+    let observationCount: Int
+}
+
 struct SubsystemRecord: Sendable {
     let id: Int64
     let name: String

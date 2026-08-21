@@ -69,6 +69,9 @@ let package = Package(
                 .target(name: "NexusKb"),
                 .product(name: "VaporTesting", package: "vapor"),
             ],
+            resources: [
+                .copy("Fixtures"),
+            ],
             swiftSettings: swiftSettings
         )
     ]

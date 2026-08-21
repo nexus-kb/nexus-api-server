@@ -1,0 +1,16 @@
+include: sample: update limits and state
+
+---
+diff --git a/include/linux/sample.h b/include/linux/sample.h
+index 555555555555..666666666666 100644
+--- a/include/linux/sample.h
++++ b/include/linux/sample.h
+@@ -1 +1 @@ #define SAMPLE_LIMIT 8
+-#define SAMPLE_LIMIT 8
++#define SAMPLE_LIMIT 16
+@@ -10,3 +10,4 @@ struct device_state {
+ struct device_state {
+-	int ready;
++	bool ready;
++	enum sample_mode mode;
+ };
