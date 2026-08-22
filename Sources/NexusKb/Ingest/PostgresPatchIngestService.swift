@@ -61,6 +61,12 @@ struct PostgresPatchIngestService: Sendable {
             coverLetterMessageID = message.inReplyTo
         }
 
+        guard metadata.diff != nil
+                || coverLetterMessageID != nil
+        else {
+            return nil
+        }
+
         let candidates = try await matchingCandidates(
             parsed: parsed,
             threadID: threadID,

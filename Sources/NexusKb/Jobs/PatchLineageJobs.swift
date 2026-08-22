@@ -130,20 +130,47 @@ struct RebuildPatchLineagesJob: AsyncJob {
             return
         }
 
-        try await context.application
+        let skippedPatchSetIDs =
+            try await context.application
             .postgres
             .withTransaction(
                 logger: context.logger
             ) { connection in
+                var skippedPatchSetIDs: [Int64] = []
+
                 for patchSet in patchSets {
-                    try await PostgresPatchLineageService()
-                        .reconcile(
-                            patchSetID: patchSet.id,
-                            connection: connection,
-                            logger: context.logger
+                    do {
+                        try await PostgresPatchLineageService()
+                            .reconcile(
+                                patchSetID: patchSet.id,
+                                connection: connection,
+                                logger: context.logger
+                            )
+                    } catch PostgresPatchLineageError
+                        .missingPatchSet(let patchSetID)
+                    {
+                        skippedPatchSetIDs.append(
+                            patchSetID
                         )
+                    }
                 }
+
+                return skippedPatchSetIDs
             }
+
+        if !skippedPatchSetIDs.isEmpty {
+            context.logger.warning(
+                "Skipped patchsets without lineage source messages",
+                metadata: [
+                    "count":
+                        "\(skippedPatchSetIDs.count)",
+                    "first-patchset-id":
+                        "\(skippedPatchSetIDs.first ?? 0)",
+                    "last-patchset-id":
+                        "\(skippedPatchSetIDs.last ?? 0)",
+                ]
+            )
+        }
 
         if patchSets.count == payload.batchSize,
            let last = patchSets.last
@@ -202,16 +229,6 @@ struct RebuildPatchLineagesJob: AsyncJob {
                         patchset.id,
                         patchset.sent_at
                     FROM patchsets AS patchset
-                    LEFT JOIN LATERAL (
-                        SELECT
-                            state.patchset_id,
-                            state.manual_lock,
-                            state.matcher_version
-                        FROM patchset_lineage_state AS state
-                        WHERE state.patchset_id =
-                                patchset.id
-                        LIMIT 1
-                    ) AS state ON true
                     WHERE patchset.id <=
                             \(targetPatchSetID)
                       AND patchset.sent_at IS NOT NULL
@@ -222,16 +239,19 @@ struct RebuildPatchLineagesJob: AsyncJob {
                             \(sentAt),
                             \(cursor.patchSetID)
                           )
-                      AND (
-                            state.patchset_id IS NULL
-                            OR (
-                                NOT state.manual_lock
-                                AND state.matcher_version <
-                                    \(PostgresPatchLineageService.matcherVersion)
-                            )
+                      AND NOT EXISTS (
+                            SELECT 1
+                            FROM patchset_lineage_state AS state
+                            WHERE state.patchset_id =
+                                    patchset.id
+                              AND (
+                                    state.manual_lock
+                                    OR state.matcher_version >=
+                                        \(PostgresPatchLineageService.matcherVersion)
+                                  )
                           )
                     ORDER BY
-                        patchset.sent_at ASC,
+                        patchset.sent_at ASC NULLS FIRST,
                         patchset.id ASC
                     LIMIT \(limit)
                     """,
@@ -249,16 +269,6 @@ struct RebuildPatchLineagesJob: AsyncJob {
                         patchset.id,
                         patchset.sent_at
                     FROM patchsets AS patchset
-                    LEFT JOIN LATERAL (
-                        SELECT
-                            state.patchset_id,
-                            state.manual_lock,
-                            state.matcher_version
-                        FROM patchset_lineage_state AS state
-                        WHERE state.patchset_id =
-                                patchset.id
-                        LIMIT 1
-                    ) AS state ON true
                     WHERE patchset.id <=
                             \(targetPatchSetID)
                       AND (
@@ -266,13 +276,16 @@ struct RebuildPatchLineagesJob: AsyncJob {
                             OR patchset.id >
                                 \(afterNullPatchSetID)
                           )
-                      AND (
-                            state.patchset_id IS NULL
-                            OR (
-                                NOT state.manual_lock
-                                AND state.matcher_version <
-                                    \(PostgresPatchLineageService.matcherVersion)
-                            )
+                      AND NOT EXISTS (
+                            SELECT 1
+                            FROM patchset_lineage_state AS state
+                            WHERE state.patchset_id =
+                                    patchset.id
+                              AND (
+                                    state.manual_lock
+                                    OR state.matcher_version >=
+                                        \(PostgresPatchLineageService.matcherVersion)
+                                  )
                           )
                     ORDER BY
                         patchset.sent_at ASC NULLS FIRST,

@@ -1,6 +1,7 @@
 @testable import NexusKb
 import Foundation
 import PostgresNIO
+import Queues
 import Testing
 import Vapor
 import VaporTesting
@@ -540,6 +541,144 @@ struct PublicInboxIngestBatchTests {
                     try await fixture.lineageExists(
                         id: lineage.lineageID
                     ) == false
+                )
+            } catch {
+                try? await fixture.remove()
+                throw error
+            }
+
+            try await fixture.remove()
+        }
+    }
+
+    @Test("Unanchored patch subjects do not create patchsets")
+    func skipsUnanchoredPatchSubject() async throws {
+        try await withApp(
+            configure: configure
+        ) { app in
+            let fixture = try await DatabaseFixture(
+                app: app
+            )
+
+            do {
+                let subject =
+                    "[PATCH] 4/6 - \(fixture.prefix) no diff"
+                let message = try fixture.message(
+                    number: 1,
+                    subject: subject,
+                    body: "No diff was included."
+                )
+
+                #expect(
+                    message.parsed.patch.isPatchOrCover
+                )
+                #expect(message.parsed.patch.diff == nil)
+                #expect(
+                    message.parsed.message.inReplyTo
+                        == nil
+                )
+
+                _ = try await PostgresIngestService(
+                    client: app.postgres
+                ).ingestBatch(
+                    [message],
+                    mailingListID:
+                        fixture.mailingListID,
+                    epoch: fixture.epoch,
+                    expectedPreviousCommitOID: nil,
+                    logger: app.logger
+                )
+
+                #expect(
+                    try await fixture.patchSetCount(
+                        subject: subject
+                    ) == 0
+                )
+            } catch {
+                try? await fixture.remove()
+                throw error
+            }
+
+            try await fixture.remove()
+        }
+    }
+
+    @Test("Lineage backfill skips legacy anchorless patchsets")
+    func lineageBackfillSkipsAnchorlessPatchSet()
+        async throws
+    {
+        try await withApp(
+            configure: configure
+        ) { app in
+            let fixture = try await DatabaseFixture(
+                app: app
+            )
+
+            do {
+                let message = try fixture.message(
+                    number: 1
+                )
+
+                _ = try await PostgresIngestService(
+                    client: app.postgres
+                ).ingestBatch(
+                    [message],
+                    mailingListID:
+                        fixture.mailingListID,
+                    epoch: fixture.epoch,
+                    expectedPreviousCommitOID: nil,
+                    logger: app.logger
+                )
+
+                let messageState = try #require(
+                    try await fixture.messageState(
+                        messageID:
+                            message.parsed.message
+                            .messageID
+                    )
+                )
+                let sentAt = Date(
+                    timeIntervalSince1970:
+                        5_000_000_000
+                )
+                let patchSetID = try await fixture
+                    .insertAnchorlessPatchSet(
+                        threadID: messageState.threadID,
+                        subject:
+                            "\(fixture.prefix) legacy patchset",
+                        sentAt: sentAt
+                    )
+                let context = QueueContext(
+                    queueName: .default,
+                    configuration:
+                        app.queues.configuration,
+                    application: app,
+                    logger: app.logger,
+                    on: app.eventLoopGroup.any()
+                )
+
+                try await RebuildPatchLineagesJob()
+                    .dequeue(
+                        context,
+                        .init(
+                            batchSize: 2,
+                            targetPatchSetID:
+                                patchSetID,
+                            cursor: .init(
+                                sentAt:
+                                    sentAt.addingTimeInterval(
+                                        -1
+                                    ),
+                                patchSetID: 0
+                            )
+                        )
+                    )
+
+                #expect(
+                    try await fixture
+                        .patchSetHasLineageState(
+                            id: patchSetID
+                        ) == false
                 )
             } catch {
                 try? await fixture.remove()
@@ -1336,6 +1475,83 @@ private final class DatabaseFixture {
         }
 
         return false
+    }
+
+    func insertAnchorlessPatchSet(
+        threadID: Int64,
+        subject: String,
+        sentAt: Date
+    ) async throws -> Int64 {
+        let rows = try await app.postgres.query(
+            """
+            INSERT INTO patchsets (
+                thread_id,
+                subject,
+                author,
+                sent_at,
+                total_parts,
+                subject_index,
+                parser_version
+            )
+            VALUES (
+                \(threadID),
+                \(subject),
+                'Legacy Test <legacy@example.com>',
+                \(sentAt),
+                6,
+                4,
+                3
+            )
+            RETURNING id
+            """,
+            logger: app.logger
+        )
+
+        for try await row in rows {
+            return try row.decode(Int64.self)
+        }
+
+        throw PostgresPatchIngestError.missingPatchSet
+    }
+
+    func patchSetHasLineageState(
+        id: Int64
+    ) async throws -> Bool {
+        let rows = try await app.postgres.query(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM patchset_lineage_state
+                WHERE patchset_id = \(id)
+            )
+            """,
+            logger: app.logger
+        )
+
+        for try await row in rows {
+            return try row.decode(Bool.self)
+        }
+
+        return false
+    }
+
+    func patchSetCount(
+        subject: String
+    ) async throws -> Int64 {
+        let rows = try await app.postgres.query(
+            """
+            SELECT count(*)::bigint
+            FROM patchsets
+            WHERE subject = \(subject)
+            """,
+            logger: app.logger
+        )
+
+        for try await row in rows {
+            return try row.decode(Int64.self)
+        }
+
+        return 0
     }
 
     func lineageExists(

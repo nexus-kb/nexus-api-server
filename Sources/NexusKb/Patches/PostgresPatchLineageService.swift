@@ -371,23 +371,24 @@ struct PostgresPatchLineageService: Sendable {
         let rows = try await connection.query(
             """
             SELECT DISTINCT state.lineage_id
-            FROM patchset_lineage_state AS state
-            JOIN patchsets AS patchset
-              ON patchset.id = state.patchset_id
+            FROM (
+                SELECT patchset.id AS patchset_id
+                FROM patchsets AS patchset
+                WHERE patchset.cover_letter_message_id =
+                        \(messageID)
+
+                UNION
+
+                SELECT patch.patchset_id
+                FROM patches AS patch
+                WHERE patch.message_id =
+                        \(messageID)
+            ) AS referenced_patchset
+            JOIN patchset_lineage_state AS state
+              ON state.patchset_id =
+                    referenced_patchset.patchset_id
             WHERE state.patchset_id <>
                     \(patchSetID)
-              AND (
-                    patchset.cover_letter_message_id =
-                        \(messageID)
-                    OR EXISTS (
-                        SELECT 1
-                        FROM patches AS patch
-                        WHERE patch.patchset_id =
-                                patchset.id
-                          AND patch.message_id =
-                                \(messageID)
-                    )
-              )
             ORDER BY state.lineage_id
             """,
             logger: logger
