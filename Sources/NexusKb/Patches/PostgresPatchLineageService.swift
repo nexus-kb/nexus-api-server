@@ -48,6 +48,8 @@ struct PostgresPatchLineageService: Sendable {
     @discardableResult
     func reconcile(
         patchSetID: Int64,
+        forceRematch: Bool = false,
+        rebuildStageID: UUID? = nil,
         connection: PostgresConnection,
         logger: Logger
     ) async throws -> Int64 {
@@ -86,6 +88,7 @@ struct PostgresPatchLineageService: Sendable {
 
         let discovered = try await selectLineage(
             for: facts,
+            rebuildStageID: rebuildStageID,
             connection: connection,
             logger: logger
         )
@@ -93,7 +96,7 @@ struct PostgresPatchLineageService: Sendable {
 
         if let discovered {
             selection = discovered
-        } else if let existing {
+        } else if let existing, !forceRematch {
             selection = Selection(
                 lineageID: existing.lineageID,
                 source: existing.source,
@@ -281,6 +284,7 @@ struct PostgresPatchLineageService: Sendable {
 
     private func selectLineage(
         for facts: Facts,
+        rebuildStageID: UUID?,
         connection: PostgresConnection,
         logger: Logger
     ) async throws -> Selection? {
@@ -288,6 +292,7 @@ struct PostgresPatchLineageService: Sendable {
             let ids = try await changeIDCandidates(
                 changeID: changeID,
                 excluding: facts.patchSetID,
+                rebuildStageID: rebuildStageID,
                 connection: connection,
                 logger: logger
             )
@@ -305,6 +310,7 @@ struct PostgresPatchLineageService: Sendable {
             let ids = try await replyCandidates(
                 messageID: inReplyTo,
                 excluding: facts.patchSetID,
+                rebuildStageID: rebuildStageID,
                 connection: connection,
                 logger: logger
             )
@@ -320,6 +326,7 @@ struct PostgresPatchLineageService: Sendable {
 
         let candidates = try await subjectCandidates(
             facts: facts,
+            rebuildStageID: rebuildStageID,
             connection: connection,
             logger: logger
         ).filter {
@@ -344,6 +351,7 @@ struct PostgresPatchLineageService: Sendable {
     private func changeIDCandidates(
         changeID: String,
         excluding patchSetID: Int64,
+        rebuildStageID: UUID?,
         connection: PostgresConnection,
         logger: Logger
     ) async throws -> [Int64] {
@@ -354,6 +362,18 @@ struct PostgresPatchLineageService: Sendable {
             WHERE patchset_id <> \(patchSetID)
               AND lower(change_id) =
                     lower(\(changeID))
+              AND (
+                    \(rebuildStageID == nil)
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM maintenance_stage_patchset_targets AS target
+                        WHERE target.stage_id = \(rebuildStageID)
+                          AND target.patchset_id =
+                                patchset_lineage_state.patchset_id
+                          AND target.force_rematch
+                          AND NOT target.processed
+                    )
+              )
             ORDER BY lineage_id
             """,
             logger: logger
@@ -365,6 +385,7 @@ struct PostgresPatchLineageService: Sendable {
     private func replyCandidates(
         messageID: String,
         excluding patchSetID: Int64,
+        rebuildStageID: UUID?,
         connection: PostgresConnection,
         logger: Logger
     ) async throws -> [Int64] {
@@ -389,6 +410,17 @@ struct PostgresPatchLineageService: Sendable {
                     referenced_patchset.patchset_id
             WHERE state.patchset_id <>
                     \(patchSetID)
+              AND (
+                    \(rebuildStageID == nil)
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM maintenance_stage_patchset_targets AS target
+                        WHERE target.stage_id = \(rebuildStageID)
+                          AND target.patchset_id = state.patchset_id
+                          AND target.force_rematch
+                          AND NOT target.processed
+                    )
+              )
             ORDER BY state.lineage_id
             """,
             logger: logger
@@ -399,6 +431,7 @@ struct PostgresPatchLineageService: Sendable {
 
     private func subjectCandidates(
         facts: Facts,
+        rebuildStageID: UUID?,
         connection: PostgresConnection,
         logger: Logger
     ) async throws -> [Candidate] {
@@ -426,6 +459,17 @@ struct PostgresPatchLineageService: Sendable {
                     \(facts.metadata.normalizedSubject)
               AND lower(state.author_email) =
                     lower(\(facts.authorEmail))
+              AND (
+                    \(rebuildStageID == nil)
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM maintenance_stage_patchset_targets AS target
+                        WHERE target.stage_id = \(rebuildStageID)
+                          AND target.patchset_id = state.patchset_id
+                          AND target.force_rematch
+                          AND NOT target.processed
+                    )
+              )
               AND (
                     \(facts.sentAt == nil)
                     OR patchset.sent_at BETWEEN

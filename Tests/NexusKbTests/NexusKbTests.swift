@@ -4,12 +4,11 @@ import Testing
 
 @Suite("App Tests")
 struct NexusKbTests {
-    @Test("Test Hello World Route")
-    func helloWorld() async throws {
+    @Test("Legacy job routes are removed")
+    func legacyJobRoutesAreRemoved() async throws {
         try await withApp(configure: configure) { app in
-            try await app.testing().test(.GET, "hello", afterResponse: { res async in
-                #expect(res.status == .ok)
-                #expect(res.body.string == "Hello, world!")
+            try await app.testing().test(.POST, "/jobs/hello", afterResponse: { res async in
+                #expect(res.status == .notFound)
             })
         }
     }

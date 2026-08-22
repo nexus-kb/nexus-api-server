@@ -1,21 +1,4 @@
 import Vapor
-import Queues
-
-private struct StartPublicInboxIngestRequest:
-    Content
-{
-    let mailingListID: Int64
-    let epoch: Int32?
-    let batchSize: Int?
-    let runMessageLimitPerEpoch: Int?
-    let scanAll: Bool?
-}
-
-private struct RebuildPatchLineagesRequest:
-    Content
-{
-    let batchSize: Int?
-}
 
 func routes(_ app: Application) throws {
     app.get { req async throws -> Response in
@@ -27,120 +10,39 @@ func routes(_ app: Application) throws {
         )
     }
 
-    app.get("hello") { req async -> String in
-        "Hello, world!"
-    }
-
-    app.post("jobs", "hello") { req async throws -> HTTPStatus in
-        try await req.queue.dispatch(
-            HelloJob.self,
-            .init()
-        )
-
-        return .accepted
-    }
-
-    app.post(
-        "jobs",
-        "public-inbox",
-        "ingest"
-    ) { req async throws -> HTTPStatus in
-        let input = try req.content.decode(
-            StartPublicInboxIngestRequest.self
-        )
-
-        let batchSize =
-            input.batchSize
-            ?? PublicInboxIngestConfiguration
-            .defaultBatchSize
-
-        guard
-            PublicInboxIngestConfiguration
-                .batchSizeRange
-                .contains(batchSize)
-                else {
-            throw Abort(
-                .badRequest,
-                reason:
-                    "batchSize must be between 1 and 10000"
-            )
-        }
-
-        if let epoch = input.epoch,
-           epoch < 0
-            {
-            throw Abort(
-                .badRequest,
-                reason:
-                    "epoch must be non-negative"
-            )
-        }
-
-        let runMessageLimitPerEpoch =
-        input.scanAll == true
-        ? nil
-        : input.runMessageLimitPerEpoch
-                ?? 20000
-
-        if let limit =
-            runMessageLimitPerEpoch,
-           limit < 1
-            {
-            throw Abort(
-                .badRequest,
-                reason:
-                    "runMessageLimitPerEpoch must be positive"
-            )
-        }
-
-        try await req.queue.dispatch(
-            ScanPublicInboxArchiveJob.self,
-            .init(
-                mailingListID:
-                    input.mailingListID,
-                epoch: input.epoch,
-                batchSize: batchSize,
-                runMessageLimitPerEpoch:
-                    runMessageLimitPerEpoch
-            )
-        )
-
-        return .accepted
-    }
-
-    app.post(
-        "jobs",
-        "patch-lineages",
-        "rebuild"
-    ) { req async throws -> HTTPStatus in
-        let input = try req.content.decode(
-            RebuildPatchLineagesRequest.self
-        )
-        let batchSize = input.batchSize ?? 250
-
-        guard RebuildPatchLineagesJob
-                .batchSizeRange
-                .contains(batchSize)
-        else {
-            throw Abort(
-                .badRequest,
-                reason:
-                    "batchSize must be between 1 and 1000"
-            )
-        }
-
-        try await req.queue.dispatch(
-            RebuildPatchLineagesJob.self,
-            .init(batchSize: batchSize),
-            maxRetryCount: 3
-        )
-
-        return .accepted
-    }
-
     let api = app.grouped(
         "api",
         "v1"
+    )
+    let admin = api.grouped("admin")
+    let maintenanceController =
+        AdminMaintenanceController()
+
+    admin.post(
+        "mailing-lists",
+        ":archiveGroup",
+        "ingest",
+        use: maintenanceController.startIngest
+    )
+    admin.post(
+        "mailing-lists",
+        ":archiveGroup",
+        "patch-lineage",
+        use: maintenanceController.startPatchLineage
+    )
+    admin.post(
+        "webhooks",
+        "grokmirror",
+        use: maintenanceController.grokmirror
+    )
+    admin.get(
+        "operations",
+        use: maintenanceController.index
+    )
+    admin.get(
+        "operations",
+        ":runID",
+        use: maintenanceController.show
     )
     let threadController =
         ThreadController()

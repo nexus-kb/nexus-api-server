@@ -26,6 +26,7 @@ enum PostgresIngestError:
 
     case missingThread(String)
     case missingMessage(String)
+    case missingMaintenanceStage(UUID)
 }
 
 struct PostgresIngestResult:
@@ -184,6 +185,7 @@ struct PostgresIngestService: Sendable {
         mailingListID: Int64,
         epoch: Int32,
         expectedPreviousCommitOID: String?,
+        maintenanceStageID: UUID? = nil,
         logger: Logger
     ) async throws -> [PostgresIngestResult] {
         try await ingestBatch(
@@ -194,6 +196,7 @@ struct PostgresIngestService: Sendable {
             epoch: epoch,
             expectedPreviousCommitOID:
                 expectedPreviousCommitOID,
+            maintenanceStageID: maintenanceStageID,
             logger: logger
         )
     }
@@ -204,6 +207,7 @@ struct PostgresIngestService: Sendable {
         mailingListID: Int64,
         epoch: Int32,
         expectedPreviousCommitOID: String?,
+        maintenanceStageID: UUID? = nil,
         logger: Logger
     ) async throws -> [PostgresIngestResult] {
         guard let finalEntry = entries.last
@@ -337,14 +341,6 @@ struct PostgresIngestService: Sendable {
                 )
             }
 
-            try await reconcilePatchLineages(
-                candidatePatchSetIDs:
-                    batchState
-                    .affectedPatchSetIDs,
-                connection: connection,
-                logger: logger
-            )
-
             try await persistMailingListLinks(
                 linksByMessageDatabaseID:
                     batchState
@@ -381,9 +377,19 @@ struct PostgresIngestService: Sendable {
                     logger: logger
                 )
 
-            try await cleanupOrphanedMessages(
+            let deletionAffectedPatchSetIDs =
+                try await cleanupOrphanedMessages(
                 candidateMessageIDs:
                     unlinkedMessageIDs,
+                connection: connection,
+                logger: logger
+            )
+
+            try await enqueuePatchLineageWork(
+                patchSetIDs:
+                    batchState.affectedPatchSetIDs
+                    .union(deletionAffectedPatchSetIDs),
+                mailingListID: mailingListID,
                 connection: connection,
                 logger: logger
             )
@@ -398,6 +404,21 @@ struct PostgresIngestService: Sendable {
                 connection: connection,
                 logger: logger
             )
+
+            if let maintenanceStageID {
+                try await execute(
+                    """
+                    UPDATE maintenance_run_stages
+                    SET processed_items =
+                            processed_items + \(entries.count),
+                        current_epoch = \(epoch)
+                    WHERE id = \(maintenanceStageID)
+                      AND mailing_list_id = \(mailingListID)
+                    """,
+                    on: connection,
+                    logger: logger
+                )
+            }
 
             return results
         }
@@ -623,6 +644,17 @@ struct PostgresIngestService: Sendable {
         if let previousThreadID,
             previousThreadID != targetThreadID
         {
+            batchState.affectedPatchSetIDs.formUnion(
+                try await patchSetIDs(
+                    threadIDs: [
+                        previousThreadID,
+                        targetThreadID,
+                    ],
+                    connection: connection,
+                    logger: logger
+                )
+            )
+
             try await mergeThread(
                 previousThreadID,
                 into: targetThreadID,
@@ -679,44 +711,110 @@ struct PostgresIngestService: Sendable {
         )
     }
 
-    private func reconcilePatchLineages(
-        candidatePatchSetIDs: Set<Int64>,
+    func resetMailingList(
+        mailingListID: Int64,
+        stageID: UUID,
+        logger: Logger
+    ) async throws {
+        try await client.withTransaction(
+            logger: logger
+        ) { connection in
+            let stageRows = try await connection.query(
+                """
+                SELECT reset_completed
+                FROM maintenance_run_stages
+                WHERE id = \(stageID)
+                  AND mailing_list_id = \(mailingListID)
+                FOR UPDATE
+                """,
+                logger: logger
+            )
+            var resetCompleted: Bool?
+            for try await row in stageRows {
+                resetCompleted = try row.decode(Bool.self)
+            }
+            guard let resetCompleted else {
+                throw PostgresIngestError
+                    .missingMaintenanceStage(stageID)
+            }
+            guard !resetCompleted else { return }
+
+            let rows = try await connection.query(
+                """
+                DELETE FROM messages_mailing_lists
+                WHERE mailing_list_id = \(mailingListID)
+                RETURNING message_id
+                """,
+                logger: logger
+            )
+            var messageIDs: [Int64] = []
+            for try await row in rows {
+                messageIDs.append(try row.decode(Int64.self))
+            }
+
+            _ = try await cleanupOrphanedMessages(
+                candidateMessageIDs: messageIDs,
+                connection: connection,
+                logger: logger
+            )
+
+            try await execute(
+                """
+                DELETE FROM mailing_list_archive_epochs
+                WHERE mailing_list_id = \(mailingListID)
+                """,
+                on: connection,
+                logger: logger
+            )
+            try await execute(
+                """
+                DELETE FROM patch_lineage_work_items
+                WHERE mailing_list_id = \(mailingListID)
+                """,
+                on: connection,
+                logger: logger
+            )
+            try await execute(
+                """
+                UPDATE maintenance_run_stages
+                SET reset_completed = true,
+                    processed_items = 0,
+                    current_epoch = NULL
+                WHERE id = \(stageID)
+                  AND mailing_list_id = \(mailingListID)
+                """,
+                on: connection,
+                logger: logger
+            )
+        }
+    }
+
+    private func enqueuePatchLineageWork(
+        patchSetIDs: Set<Int64>,
+        mailingListID: Int64,
         connection: PostgresConnection,
         logger: Logger
     ) async throws {
-        guard !candidatePatchSetIDs.isEmpty else {
+        guard !patchSetIDs.isEmpty else {
             return
         }
 
-        let rows = try await connection.query(
+        try await execute(
             """
-            SELECT id
-            FROM patchsets
-            WHERE id = ANY(
-                    \(candidatePatchSetIDs.sorted())::bigint[]
+            INSERT INTO patch_lineage_work_items (
+                mailing_list_id, patchset_id
+            )
+            SELECT \(mailingListID), patchset.id
+            FROM patchsets AS patchset
+            WHERE patchset.id = ANY(
+                    \(patchSetIDs.sorted())::bigint[]
                   )
-            ORDER BY
-                sent_at ASC NULLS FIRST,
-                id ASC
+            ON CONFLICT (mailing_list_id, patchset_id)
+            DO UPDATE SET queued_at = now()
             """,
+            on: connection,
             logger: logger
         )
-        var patchSetIDs: [Int64] = []
-
-        for try await row in rows {
-            patchSetIDs.append(
-                try row.decode(Int64.self)
-            )
-        }
-
-        for patchSetID in patchSetIDs {
-            _ = try await PostgresPatchLineageService()
-                .reconcile(
-                    patchSetID: patchSetID,
-                    connection: connection,
-                    logger: logger
-                )
-        }
     }
 
     private func ensureThread(
@@ -907,6 +1005,26 @@ struct PostgresIngestService: Sendable {
          )
      }
 
+    private func patchSetIDs(
+        threadIDs: [Int64],
+        connection: PostgresConnection,
+        logger: Logger
+    ) async throws -> Set<Int64> {
+        let rows = try await connection.query(
+            """
+            SELECT id
+            FROM patchsets
+            WHERE thread_id = ANY(\(threadIDs)::bigint[])
+            """,
+            logger: logger
+        )
+        var values: Set<Int64> = []
+        for try await row in rows {
+            values.insert(try row.decode(Int64.self))
+        }
+        return values
+    }
+
     private func persistMailingListLinks(
         linksByMessageDatabaseID:
             [Int64: String],
@@ -1000,9 +1118,9 @@ struct PostgresIngestService: Sendable {
         candidateMessageIDs: [Int64],
         connection: PostgresConnection,
         logger: Logger
-    ) async throws {
+    ) async throws -> Set<Int64> {
         guard !candidateMessageIDs.isEmpty else {
-            return
+            return []
         }
 
         let orphanRows = try await connection.query(
@@ -1041,7 +1159,7 @@ struct PostgresIngestService: Sendable {
         }
 
         guard !orphanIDs.isEmpty else {
-            return
+            return []
         }
 
         let patchSetRows = try await connection.query(
@@ -1275,6 +1393,8 @@ struct PostgresIngestService: Sendable {
             on: connection,
             logger: logger
         )
+
+        return Set(affectedPatchSetIDs)
     }
 
     private func updateThreadMetadata(

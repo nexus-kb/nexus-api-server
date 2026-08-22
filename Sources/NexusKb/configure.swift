@@ -27,16 +27,7 @@ func configure(_ app: Application) async throws {
     )
     
     app.queues.configuration.workerCount = 1
-    app.queues.add(HelloJob())
-    app.queues.add(
-        ScanPublicInboxArchiveJob()
-    )
-    app.queues.add(
-        IngestPublicInboxEpochJob()
-    )
-    app.queues.add(
-        RebuildPatchLineagesJob()
-    )
+    app.queues.add(MaintenanceWorkflowJob())
     
     // register routes
     try routes(app)

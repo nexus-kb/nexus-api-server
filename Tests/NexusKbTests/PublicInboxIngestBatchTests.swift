@@ -1,7 +1,6 @@
 @testable import NexusKb
 import Foundation
 import PostgresNIO
-import Queues
 import Testing
 import Vapor
 import VaporTesting
@@ -498,6 +497,8 @@ struct PublicInboxIngestBatchTests {
                     logger: app.logger
                 )
 
+                try await fixture.reconcilePendingLineages()
+
                 let patchSet = try #require(
                     try await fixture.patchSetState(
                         messageID:
@@ -648,32 +649,25 @@ struct PublicInboxIngestBatchTests {
                             "\(fixture.prefix) legacy patchset",
                         sentAt: sentAt
                     )
-                let context = QueueContext(
-                    queueName: .default,
-                    configuration:
-                        app.queues.configuration,
-                    application: app,
-                    logger: app.logger,
-                    on: app.eventLoopGroup.any()
-                )
-
-                try await RebuildPatchLineagesJob()
-                    .dequeue(
-                        context,
-                        .init(
-                            batchSize: 2,
-                            targetPatchSetID:
-                                patchSetID,
-                            cursor: .init(
-                                sentAt:
-                                    sentAt.addingTimeInterval(
-                                        -1
-                                    ),
-                                patchSetID: 0
+                var skipped = false
+                try await app.postgres.withTransaction(
+                    logger: app.logger
+                ) { connection in
+                    do {
+                        _ = try await PostgresPatchLineageService()
+                            .reconcile(
+                                patchSetID: patchSetID,
+                                connection: connection,
+                                logger: app.logger
                             )
-                        )
-                    )
+                    } catch PostgresPatchLineageError
+                        .missingPatchSet
+                    {
+                        skipped = true
+                    }
+                }
 
+                #expect(skipped)
                 #expect(
                     try await fixture
                         .patchSetHasLineageState(
@@ -774,6 +768,48 @@ struct PublicInboxIngestBatchTests {
                 throw error
             }
 
+            try await fixture.remove()
+        }
+    }
+
+    @Test("Ingest queues lineage work without running the matcher")
+    func queuesLineageWork() async throws {
+        try await withApp(configure: configure) { app in
+            let fixture = try await DatabaseFixture(app: app)
+            do {
+                let message = try fixture.message(
+                    number: 1,
+                    subject: "[PATCH] \(fixture.prefix): queued lineage",
+                    body:
+                        """
+                        diff --git a/file b/file
+                        --- a/file
+                        +++ b/file
+                        @@ -1 +1 @@
+                        -old
+                        +new
+                        """
+                )
+                _ = try await PostgresIngestService(
+                    client: app.postgres
+                ).ingestBatch(
+                    [message],
+                    mailingListID: fixture.mailingListID,
+                    epoch: fixture.epoch,
+                    expectedPreviousCommitOID: nil,
+                    logger: app.logger
+                )
+
+                #expect(
+                    try await fixture.lineageState(
+                        messageID: message.parsed.message.messageID
+                    ) == nil
+                )
+                #expect(try await fixture.lineageWorkCount() == 1)
+            } catch {
+                try? await fixture.remove()
+                throw error
+            }
             try await fixture.remove()
         }
     }
@@ -1408,6 +1444,62 @@ private final class DatabaseFixture {
         return 0
     }
 
+    func reconcilePendingLineages() async throws {
+        try await app.postgres.withTransaction(
+            logger: app.logger
+        ) { connection in
+            let rows = try await connection.query(
+                """
+                SELECT work.patchset_id
+                FROM patch_lineage_work_items AS work
+                JOIN patchsets AS patchset
+                  ON patchset.id = work.patchset_id
+                WHERE work.mailing_list_id = \(mailingListID)
+                ORDER BY patchset.sent_at ASC NULLS FIRST,
+                         patchset.id
+                """,
+                logger: app.logger
+            )
+            var patchSetIDs: [Int64] = []
+            for try await row in rows {
+                patchSetIDs.append(try row.decode(Int64.self))
+            }
+
+            for patchSetID in patchSetIDs {
+                _ = try await PostgresPatchLineageService()
+                    .reconcile(
+                        patchSetID: patchSetID,
+                        connection: connection,
+                        logger: app.logger
+                    )
+            }
+
+            let deleted = try await connection.query(
+                """
+                DELETE FROM patch_lineage_work_items
+                WHERE mailing_list_id = \(mailingListID)
+                """,
+                logger: app.logger
+            )
+            for try await _ in deleted {}
+        }
+    }
+
+    func lineageWorkCount() async throws -> Int64 {
+        let rows = try await app.postgres.query(
+            """
+            SELECT count(*)::bigint
+            FROM patch_lineage_work_items
+            WHERE mailing_list_id = \(mailingListID)
+            """,
+            logger: app.logger
+        )
+        for try await row in rows {
+            return try row.decode(Int64.self)
+        }
+        return 0
+    }
+
     func lineageState(
         messageID: String
     ) async throws -> TestLineageState? {
@@ -1626,6 +1718,8 @@ func linksPatchRevisionsByChangeID() async throws {
                 logger: app.logger
             )
 
+            try await fixture.reconcilePendingLineages()
+
             let firstState = try #require(
                 try await fixture.lineageState(
                     messageID:
@@ -1741,6 +1835,8 @@ func linksPatchRevisionsByReplyChain() async throws {
                 logger: app.logger
             )
 
+            try await fixture.reconcilePendingLineages()
+
             let firstState = try #require(
                 try await fixture.lineageState(
                     messageID:
@@ -1819,6 +1915,8 @@ func linksPatchRevisionsBySubjectAndAuthor()
                 expectedPreviousCommitOID: nil,
                 logger: app.logger
             )
+
+            try await fixture.reconcilePendingLineages()
 
             let firstState = try #require(
                 try await fixture.lineageState(
