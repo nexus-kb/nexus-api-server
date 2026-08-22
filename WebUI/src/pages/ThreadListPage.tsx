@@ -1,7 +1,7 @@
 import { A, useSearchParams } from "@solidjs/router";
 import { For, Show, createEffect, createResource, createSignal } from "solid-js";
 import { getMailingLists, getThreads, threadRoute } from "../api";
-import { absoluteDate, displayAuthor, displaySubject, plural, relativeDate } from "../format";
+import { absoluteDate, displayAuthor, displaySubject, plural } from "../format";
 import type {
   MailingListResponse,
   PatchSeries,
@@ -45,12 +45,10 @@ function ThreadRow(props: { thread: ThreadSummary }) {
         <span>{displayAuthor(thread().author)}</span>
         <Show when={thread().startedAt}>
           {(startedAt) => (
-            <span title={absoluteDate(startedAt())}>created {relativeDate(startedAt())}</span>
+            <span>created {absoluteDate(startedAt())}</span>
           )}
         </Show>
-        <span title={absoluteDate(thread().lastActivityAt)}>
-          updated {relativeDate(thread().lastActivityAt)}
-        </span>
+        <span>updated {absoluteDate(thread().lastActivityAt)}</span>
         <span>{plural(thread().messageCount, "message")}</span>
         <For each={thread().mailingLists}>
           {(mailingList) => (

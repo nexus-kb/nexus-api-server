@@ -16,40 +16,12 @@ export function absoluteDate(value: string | null): string {
     return value;
   }
 
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(date);
-}
-
-export function relativeDate(value: string | null, now = Date.now()): string {
-  if (!value) {
-    return "unknown time";
-  }
-
-  const time = new Date(value).getTime();
-  if (Number.isNaN(time)) {
-    return value;
-  }
-
-  const seconds = Math.round((time - now) / 1_000);
-  const intervals: Array<[Intl.RelativeTimeFormatUnit, number]> = [
-    ["year", 31_536_000],
-    ["month", 2_592_000],
-    ["week", 604_800],
-    ["day", 86_400],
-    ["hour", 3_600],
-    ["minute", 60],
-  ];
-  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-
-  for (const [unit, interval] of intervals) {
-    if (Math.abs(seconds) >= interval) {
-      return formatter.format(Math.round(seconds / interval), unit);
-    }
-  }
-
-  return formatter.format(seconds, "second");
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return [
+    `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`,
+    `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`,
+    "UTC",
+  ].join(" ");
 }
 
 export function plural(count: number, singular: string, pluralForm = `${singular}s`): string {

@@ -369,12 +369,14 @@ p {
 }
 
 .thread-skeleton,
-.thread-page-skeleton {
+.thread-page-skeleton,
+.lineage-summary-skeleton {
   overflow: hidden;
 }
 
 .thread-skeleton span,
-.thread-page-skeleton span {
+.thread-page-skeleton span,
+.lineage-summary-skeleton span {
   display: block;
   height: 10px;
   border-radius: 2px;
@@ -403,7 +405,8 @@ p {
 
 @media (prefers-reduced-motion: reduce) {
   .thread-skeleton span,
-  .thread-page-skeleton span {
+  .thread-page-skeleton span,
+  .lineage-summary-skeleton span {
     animation: none;
   }
 }
@@ -413,10 +416,40 @@ p {
 }
 
 .lineage-summary {
+  min-height: 116px;
   margin-bottom: 14px;
   border: 1px solid var(--border);
   border-radius: 5px;
   background: var(--surface);
+}
+
+.lineage-skeleton-body {
+  display: grid;
+  align-content: center;
+  gap: 16px;
+  min-height: 83px;
+  padding: 10px 12px;
+}
+
+.lineage-skeleton-body span:first-child {
+  width: min(520px, 65%);
+  height: 16px;
+}
+
+.lineage-skeleton-body span:last-child {
+  width: min(160px, 30%);
+}
+
+.lineage-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 83px;
+  margin-bottom: 0;
+  padding: 10px 12px;
+  color: var(--text-muted);
+  text-align: center;
 }
 
 .lineage-summary h1 {
@@ -466,8 +499,37 @@ p {
 }
 
 .thread-heading h1 {
+  min-width: 0;
   overflow-wrap: anywhere;
   font-size: 1.25rem;
+}
+
+.thread-heading-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.thread-heading-row h1 {
+  flex: 1;
+}
+
+.thread-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+.thread-actions button {
+  min-height: 28px;
+  padding: 3px 8px;
+  font-size: 0.78rem;
+}
+
+@media (max-width: 680px) {
+  .thread-heading-row {
+    flex-direction: column;
+  }
 }
 
 .thread-tags {
