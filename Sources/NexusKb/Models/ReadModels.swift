@@ -50,23 +50,14 @@ enum MessageAvailability:
     case missing
 }
 
-struct ThreadMessageSummary: Sendable {
-    let messageID: String
-    let inReplyToMessageID: String?
-    let referenceMessageIDs: [String]
-    let availability: MessageAvailability
-    let subject: String?
-    let author: String?
-    let sentAt: Date?
-    let bodyPreview: String?
-    let patchPartIndex: Int32?
-    let patchTotalParts: Int32?
+struct ThreadMessage: Sendable {
+    let detail: MessageDetail
     let sortAt: Date
 }
 
 struct ThreadMessagePageResult: Sendable {
     let rootMessageID: String
-    let items: [ThreadMessageSummary]
+    let items: [ThreadMessage]
     let previousCursor: String?
     let nextCursor: String?
 }

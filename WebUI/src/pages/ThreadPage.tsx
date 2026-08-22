@@ -9,7 +9,6 @@ import {
   onCleanup,
 } from "solid-js";
 import {
-  getMessage,
   getThread,
   getThreadMessages,
   getThreadPatchLineages,
@@ -17,7 +16,7 @@ import {
 } from "../api";
 import { absoluteDate, displayAuthor, displaySubject, plural, relativeDate } from "../format";
 import { buildThreadTree, mergeMessages, type ThreadTreeNode } from "../threadTree";
-import type { MessageDetail, ThreadMessageSummary } from "../types";
+import type { MessageDetail } from "../types";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "The request failed";
@@ -48,16 +47,12 @@ interface MessageNodeProps {
   node: ThreadTreeNode;
   depth: number;
   expanded: (messageID: string) => boolean;
-  detail: (messageID: string) => MessageDetail | undefined;
-  detailError: (messageID: string) => string | undefined;
-  toggle: (message: ThreadMessageSummary) => void;
-  retry: (message: ThreadMessageSummary) => void;
+  toggle: (message: MessageDetail) => void;
 }
 
 function MessageNode(props: MessageNodeProps) {
   const message = () => props.node.message;
   const isExpanded = () => props.expanded(message().messageId);
-  const detail = () => props.detail(message().messageId);
 
   return (
     <li
@@ -103,49 +98,22 @@ function MessageNode(props: MessageNodeProps) {
         <Show
           when={message().availability === "available" && isExpanded()}
         >
-          <Show
-            when={detail()}
-            fallback={
-              <Show
-                when={props.detailError(message().messageId)}
-                fallback={<p class="message-loading" role="status">Loading full message…</p>}
-              >
-                {(loadError) => (
-                  <div class="inline-error" role="alert">
-                    {loadError()} {" "}
-                    <button
-                      class="text-button"
-                      onClick={() => props.retry(message())}
-                      type="button"
-                    >
-                      Retry
-                    </button>
-                  </div>
-                )}
-              </Show>
-            }
-          >
-            {(loadedDetail) => (
-              <>
-                <div class="message-recipients">
-                  <Show when={loadedDetail().to.length > 0}>
-                    <div>
-                      <span>to</span> {mailboxList(loadedDetail().to)}
-                    </div>
-                  </Show>
-                  <Show when={loadedDetail().cc.length > 0}>
-                    <div>
-                      <span>cc</span> {mailboxList(loadedDetail().cc)}
-                    </div>
-                  </Show>
-                </div>
-                <pre class="message-body">{loadedDetail().body || "(empty message body)"}</pre>
-                <a class="lore-link" href={loadedDetail().loreUrl} rel="noreferrer" target="_blank">
-                  View on lore.kernel.org
-                </a>
-              </>
-            )}
-          </Show>
+          <div class="message-recipients">
+            <Show when={message().to.length > 0}>
+              <div>
+                <span>to</span> {mailboxList(message().to)}
+              </div>
+            </Show>
+            <Show when={message().cc.length > 0}>
+              <div>
+                <span>cc</span> {mailboxList(message().cc)}
+              </div>
+            </Show>
+          </div>
+          <pre class="message-body">{message().body || "(empty message body)"}</pre>
+          <a class="lore-link" href={message().loreUrl} rel="noreferrer" target="_blank">
+            View on lore.kernel.org
+          </a>
         </Show>
       </article>
 
@@ -164,21 +132,21 @@ export function ThreadPage() {
   const [searchParams] = useSearchParams();
   const rootMessageID = () => firstParameter(searchParams.root)?.trim() || undefined;
   const [pageData, { refetch }] = createResource(rootMessageID, async (root) => {
-    const [thread, messagePage, lineagePage] = await Promise.all([
+    const [thread, messagePage] = await Promise.all([
       getThread(root),
       getThreadMessages(root),
-      getThreadPatchLineages(root),
     ]);
-    return { thread, messagePage, lineagePage };
+    return { thread, messagePage };
   });
-  const [messages, setMessages] = createSignal<ThreadMessageSummary[]>([]);
+  const [lineagePage] = createResource(
+    rootMessageID,
+    async (root) => getThreadPatchLineages(root),
+  );
+  const [messages, setMessages] = createSignal<MessageDetail[]>([]);
   const [nextCursor, setNextCursor] = createSignal<string | null>(null);
   const [loadingMore, setLoadingMore] = createSignal(false);
   const [loadMoreError, setLoadMoreError] = createSignal<string>();
   const [expandedIDs, setExpandedIDs] = createSignal<ReadonlySet<string>>(new Set());
-  const [details, setDetails] = createSignal<ReadonlyMap<string, MessageDetail>>(new Map());
-  const [loadingDetails, setLoadingDetails] = createSignal<ReadonlySet<string>>(new Set());
-  const [detailErrors, setDetailErrors] = createSignal<ReadonlyMap<string, string>>(new Map());
   let messageTree!: HTMLOListElement;
 
   createEffect(() => {
@@ -188,77 +156,28 @@ export function ThreadPage() {
       setNextCursor(value.messagePage.pagination.nextCursor);
       setLoadMoreError(undefined);
       setExpandedIDs(new Set<string>());
-      setDetails(new Map());
-      setDetailErrors(new Map());
     }
   });
 
   const tree = createMemo(() => buildThreadTree(messages()));
   const isExpanded = (messageID: string) => expandedIDs().has(messageID);
-  const detailFor = (messageID: string) => details().get(messageID);
-  const detailIsLoading = (messageID: string) => loadingDetails().has(messageID);
-  const detailError = (messageID: string) => detailErrors().get(messageID);
-
-  const loadDetail = async (message: ThreadMessageSummary) => {
+  const toggleMessage = (message: MessageDetail) => {
     const messageID = message.messageId;
-    setLoadingDetails((current) => new Set(current).add(messageID));
-    setDetailErrors((current) => {
-      const next = new Map(current);
-      next.delete(messageID);
+    setExpandedIDs((current) => {
+      const next = new Set(current);
+      if (next.has(messageID)) {
+        next.delete(messageID);
+      } else {
+        next.add(messageID);
+      }
       return next;
     });
-
-    try {
-      const detail = await getMessage(messageID);
-      setDetails((current) => new Map(current).set(messageID, detail));
-    } catch (error) {
-      setDetailErrors((current) => new Map(current).set(messageID, errorMessage(error)));
-    } finally {
-      setLoadingDetails((current) => {
-        const next = new Set(current);
-        next.delete(messageID);
-        return next;
-      });
-    }
-  };
-
-  const expandMessage = (message: ThreadMessageSummary): Promise<void> => {
-    const messageID = message.messageId;
-    if (isExpanded(messageID)) {
-      return Promise.resolve();
-    }
-
-    setExpandedIDs((current) => new Set(current).add(messageID));
-    if (!detailFor(messageID) && !detailIsLoading(messageID)) {
-      return loadDetail(message);
-    }
-    return Promise.resolve();
-  };
-
-  const toggleMessage = (message: ThreadMessageSummary) => {
-    const messageID = message.messageId;
-    if (isExpanded(messageID)) {
-      setExpandedIDs((current) => {
-        const next = new Set(current);
-        next.delete(messageID);
-        return next;
-      });
-      return;
-    }
-
-    void expandMessage(message);
-  };
-
-  const retryDetail = (message: ThreadMessageSummary) => {
-    if (!detailIsLoading(message.messageId)) {
-      void loadDetail(message);
-    }
   };
 
   createEffect(() => {
     const currentMessages = messages();
     let cancelled = false;
-    queueMicrotask(async () => {
+    queueMicrotask(() => {
       if (cancelled || !messageTree?.isConnected) {
         return;
       }
@@ -269,6 +188,8 @@ export function ThreadPage() {
       const messageElements = Array.from(
         messageTree.querySelectorAll<HTMLElement>("[data-message-id]"),
       );
+
+      const visibleMessageIDs = new Set<string>();
 
       for (const element of messageElements) {
         if (cancelled || !messageTree?.isConnected) {
@@ -288,7 +209,13 @@ export function ThreadPage() {
           break;
         }
 
-        await expandMessage(message);
+        visibleMessageIDs.add(message.messageId);
+      }
+
+      if (visibleMessageIDs.size > 0) {
+        setExpandedIDs((current) =>
+          new Set([...current, ...visibleMessageIDs]),
+        );
       }
     });
     onCleanup(() => {
@@ -350,36 +277,40 @@ export function ThreadPage() {
       <Show when={pageData()}>
         {(data) => (
           <>
-            <For each={data().lineagePage.items}>
-              {(lineage) => (
-                <section class="lineage-summary" aria-label="Patch lineage">
-                  <div class="lineage-eyebrow">
-                    Patch lineage · {plural(lineage.revisions.length, "version")}
-                  </div>
-                  <h1>{lineage.subject}</h1>
-                  <nav class="lineage-revisions" aria-label="Patch versions">
-                    <For each={lineage.revisions}>
-                      {(revision) => (
-                        <A
-                          class="lineage-revision"
-                          classList={{
-                            active: revision.rootMessageId === rootMessageID(),
-                          }}
-                          href={threadRoute(revision.rootMessageId)}
-                        >
-                          {revisionLabel(
-                            revision.phase,
-                            revision.revision,
-                            revision.revisionExplicit,
-                            revision.isResend,
+            <Show when={lineagePage()}>
+              {(page) => (
+                <For each={page().items}>
+                  {(lineage) => (
+                    <section class="lineage-summary" aria-label="Patch lineage">
+                      <div class="lineage-eyebrow">
+                        Patch lineage · {plural(lineage.revisions.length, "version")}
+                      </div>
+                      <h1>{lineage.subject}</h1>
+                      <nav class="lineage-revisions" aria-label="Patch versions">
+                        <For each={lineage.revisions}>
+                          {(revision) => (
+                            <A
+                              class="lineage-revision"
+                              classList={{
+                                active: revision.rootMessageId === rootMessageID(),
+                              }}
+                              href={threadRoute(revision.rootMessageId)}
+                            >
+                              {revisionLabel(
+                                revision.phase,
+                                revision.revision,
+                                revision.revisionExplicit,
+                                revision.isResend,
+                              )}
+                            </A>
                           )}
-                        </A>
-                      )}
-                    </For>
-                  </nav>
-                </section>
+                        </For>
+                      </nav>
+                    </section>
+                  )}
+                </For>
               )}
-            </For>
+            </Show>
 
             <header class="thread-heading">
               <h1 id="thread-heading">{displaySubject(data().thread.subject)}</h1>
@@ -419,11 +350,8 @@ export function ThreadPage() {
                   {(node) => (
                     <MessageNode
                       depth={0}
-                      detail={detailFor}
-                      detailError={detailError}
                       expanded={isExpanded}
                       node={node}
-                      retry={retryDetail}
                       toggle={toggleMessage}
                     />
                   )}

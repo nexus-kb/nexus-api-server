@@ -20,7 +20,7 @@ struct ReadAPIIntegrationTests {
             do {
             var firstThread: ThreadSummaryView?
             var firstPage: ThreadListView?
-            var firstMessage: ThreadMessageSummaryView?
+            var firstMessage: MessageDetailView?
 
             try await app.testing().test(
                 .GET,
@@ -136,6 +136,10 @@ struct ReadAPIIntegrationTests {
                 )
                 #expect(value.items.count <= 1)
                 firstMessage = value.items.first
+                #expect(
+                    firstMessage?.body
+                        == "Fixture body"
+                )
             }
 
             if let firstMessage {

@@ -146,17 +146,23 @@ describe("ThreadListPage", () => {
 });
 
 describe("ThreadPage", () => {
-  it("loads the tree, expands and caches details, skips missing details, and appends pages", async () => {
-    const rootMessage = {
+  it("loads full messages, expands them locally, and appends pages", async () => {
+    const rootMessage: MessageDetail = {
       messageId: thread.rootMessageId,
+      rootMessageId: thread.rootMessageId,
       inReplyToMessageId: null,
       referenceMessageIds: [],
       availability: "available" as const,
       subject: thread.subject,
       author: thread.author,
+      to: [{ name: "Netdev", email: "netdev@example.com" }],
+      cc: [],
       sentAt: thread.startedAt,
-      bodyPreview: "Root message preview",
+      body: "Full root message body",
       patch: { partIndex: 0, totalParts: 2 },
+      mailingLists: thread.mailingLists,
+      subsystems: thread.subsystems,
+      loreUrl: "https://lore.kernel.org/r/root",
     };
     const firstMessages: ThreadMessagesResponse = {
       rootMessageId: thread.rootMessageId,
@@ -164,14 +170,20 @@ describe("ThreadPage", () => {
         rootMessage,
         {
           messageId: "missing@example.com",
+          rootMessageId: thread.rootMessageId,
           inReplyToMessageId: thread.rootMessageId,
           referenceMessageIds: [thread.rootMessageId],
           availability: "missing",
-          subject: "Missing reply",
+          subject: null,
           author: null,
+          to: [],
+          cc: [],
           sentAt: null,
-          bodyPreview: null,
+          body: null,
           patch: null,
+          mailingLists: [],
+          subsystems: [],
+          loreUrl: "https://lore.kernel.org/r/missing",
         },
       ],
       pagination: { previousCursor: null, nextCursor: "more-messages" },
@@ -181,39 +193,23 @@ describe("ThreadPage", () => {
       items: [
         {
           messageId: "child@example.com",
+          rootMessageId: thread.rootMessageId,
           inReplyToMessageId: thread.rootMessageId,
           referenceMessageIds: [thread.rootMessageId],
           availability: "available",
           subject: "Re: repair the packet path",
           author: "Reviewer <reviewer@example.com>",
+          to: [],
+          cc: [],
           sentAt: "2026-08-15T13:00:00Z",
-          bodyPreview: "Reviewed-by: Reviewer",
+          body: "Reviewed-by: Reviewer",
           patch: null,
+          mailingLists: thread.mailingLists,
+          subsystems: thread.subsystems,
+          loreUrl: "https://lore.kernel.org/r/child",
         },
       ],
       pagination: { previousCursor: "back", nextCursor: null },
-    };
-    const detail: MessageDetail = {
-      ...rootMessage,
-      rootMessageId: thread.rootMessageId,
-      to: [{ name: "Netdev", email: "netdev@example.com" }],
-      cc: [],
-      body: "Full root message body",
-      mailingLists: thread.mailingLists,
-      subsystems: thread.subsystems,
-      loreUrl: "https://lore.kernel.org/r/root",
-    };
-    const childDetail: MessageDetail = {
-      ...detail,
-      messageId: "child@example.com",
-      inReplyToMessageId: thread.rootMessageId,
-      referenceMessageIds: [thread.rootMessageId],
-      subject: "Re: repair the packet path",
-      author: "Reviewer <reviewer@example.com>",
-      sentAt: "2026-08-15T13:00:00Z",
-      body: "Reviewed-by: Reviewer",
-      patch: null,
-      loreUrl: "https://lore.kernel.org/r/child",
     };
     const lineages: PatchLineageCollectionResponse = {
       items: [
@@ -267,6 +263,10 @@ describe("ThreadPage", () => {
         },
       ],
     };
+    let resolveLineages!: (response: Response) => void;
+    const lineageResponse = new Promise<Response>((resolve) => {
+      resolveLineages = resolve;
+    });
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/messages?")) {
@@ -274,13 +274,8 @@ describe("ThreadPage", () => {
           jsonResponse(url.includes("cursor=more-messages") ? secondMessages : firstMessages),
         );
       }
-      if (url.startsWith("/api/v1/messages/")) {
-        return Promise.resolve(
-          jsonResponse(url.includes("child%40example.com") ? childDetail : detail),
-        );
-      }
       if (url.endsWith("/patch-lineages")) {
-        return Promise.resolve(jsonResponse(lineages));
+        return lineageResponse;
       }
       if (url.startsWith("/api/v1/threads/")) {
         return Promise.resolve(jsonResponse(thread));
@@ -297,13 +292,14 @@ describe("ThreadPage", () => {
     ));
 
     expect(await screen.findByText("Full root message body")).toBeInTheDocument();
-    expect(screen.getByText("Patch lineage · 2 versions")).toBeInTheDocument();
+    expect(screen.queryByText("Patch lineage · 2 versions")).not.toBeInTheDocument();
+    resolveLineages(jsonResponse(lineages));
+    expect(await screen.findByText("Patch lineage · 2 versions")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "PATCH v2" })).toHaveClass("active");
     expect(screen.getByRole("link", { name: "PATCH" })).toHaveAttribute(
       "href",
       expect.stringContaining("v1%40example.com"),
     );
-    expect(screen.queryByText("Root message preview")).not.toBeInTheDocument();
     expect(screen.queryByText("[message unavailable]", { exact: false })).not.toBeInTheDocument();
     expect(screen.queryByText("patch 0/2")).not.toBeInTheDocument();
     expect(
@@ -312,7 +308,6 @@ describe("ThreadPage", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /Collapse message from/ }));
     expect(screen.queryByText("Full root message body")).not.toBeInTheDocument();
-    expect(screen.queryByText("Root message preview")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /Expand message from/ }));
     expect(screen.getByText("Full root message body")).toBeInTheDocument();
 
@@ -322,6 +317,6 @@ describe("ThreadPage", () => {
     const detailRequests = fetchMock.mock.calls.filter(([input]) =>
       String(input).startsWith("/api/v1/messages/"),
     );
-    expect(detailRequests).toHaveLength(2);
+    expect(detailRequests).toHaveLength(0);
   });
 });

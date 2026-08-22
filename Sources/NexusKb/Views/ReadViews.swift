@@ -133,51 +133,15 @@ struct PatchPositionView: Content {
     let totalParts: Int32
 }
 
-struct ThreadMessageSummaryView: Content {
-    let messageId: String
-    let inReplyToMessageId: String?
-    let referenceMessageIds: [String]
-    let availability: String
-    let subject: String?
-    let author: String?
-    let sentAt: Date?
-    let bodyPreview: String?
-    let patch: PatchPositionView?
-
-    init(_ value: ThreadMessageSummary) {
-        messageId = value.messageID
-        inReplyToMessageId =
-            value.inReplyToMessageID
-        referenceMessageIds =
-            value.referenceMessageIDs
-        availability = value.availability.rawValue
-        subject = value.subject
-        author = value.author
-        sentAt = value.sentAt
-        bodyPreview = value.bodyPreview
-
-        if let partIndex = value.patchPartIndex,
-           let totalParts = value.patchTotalParts
-        {
-            patch = PatchPositionView(
-                partIndex: partIndex,
-                totalParts: totalParts
-            )
-        } else {
-            patch = nil
-        }
-    }
-}
-
 struct ThreadMessagesView: Content {
     let rootMessageId: String
-    let items: [ThreadMessageSummaryView]
+    let items: [MessageDetailView]
     let pagination: PaginationView
 
     init(_ value: ThreadMessagePageResult) {
         rootMessageId = value.rootMessageID
         items = value.items.map(
-            ThreadMessageSummaryView.init
+            { MessageDetailView($0.detail) }
         )
         pagination = PaginationView(
             previousCursor:

@@ -49,21 +49,9 @@ export interface PatchPosition {
   totalParts: number;
 }
 
-export interface ThreadMessageSummary {
-  messageId: string;
-  inReplyToMessageId: string | null;
-  referenceMessageIds: string[];
-  availability: MessageAvailability;
-  subject: string | null;
-  author: string | null;
-  sentAt: string | null;
-  bodyPreview: string | null;
-  patch: PatchPosition | null;
-}
-
 export interface ThreadMessagesResponse {
   rootMessageId: string;
-  items: ThreadMessageSummary[];
+  items: MessageDetail[];
   pagination: Pagination;
 }
 

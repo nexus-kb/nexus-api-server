@@ -1,11 +1,11 @@
-import type { ThreadMessageSummary } from "./types";
+import type { MessageDetail } from "./types";
 
 export interface ThreadTreeNode {
-  message: ThreadMessageSummary;
+  message: MessageDetail;
   children: ThreadTreeNode[];
 }
 
-function candidateParentIDs(message: ThreadMessageSummary): string[] {
+function candidateParentIDs(message: MessageDetail): string[] {
   const references = [...message.referenceMessageIds].reverse();
   return message.inReplyToMessageId
     ? [message.inReplyToMessageId, ...references]
@@ -32,8 +32,8 @@ function wouldCreateCycle(
   return false;
 }
 
-export function buildThreadTree(messages: readonly ThreadMessageSummary[]): ThreadTreeNode[] {
-  const uniqueMessages = new Map<string, ThreadMessageSummary>();
+export function buildThreadTree(messages: readonly MessageDetail[]): ThreadTreeNode[] {
+  const uniqueMessages = new Map<string, MessageDetail>();
   const order = new Map<string, number>();
 
   messages.forEach((message, index) => {
@@ -89,9 +89,9 @@ export function buildThreadTree(messages: readonly ThreadMessageSummary[]): Thre
 }
 
 export function mergeMessages(
-  current: readonly ThreadMessageSummary[],
-  incoming: readonly ThreadMessageSummary[],
-): ThreadMessageSummary[] {
+  current: readonly MessageDetail[],
+  incoming: readonly MessageDetail[],
+): MessageDetail[] {
   const merged = new Map(current.map((message) => [message.messageId, message]));
 
   for (const message of incoming) {

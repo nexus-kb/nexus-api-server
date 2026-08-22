@@ -1,22 +1,28 @@
 import { describe, expect, it } from "vitest";
 import { buildThreadTree, mergeMessages } from "./threadTree";
-import type { ThreadMessageSummary } from "./types";
+import type { MessageDetail } from "./types";
 
 function message(
   messageId: string,
   inReplyToMessageId: string | null = null,
   referenceMessageIds: string[] = [],
-): ThreadMessageSummary {
+): MessageDetail {
   return {
     messageId,
+    rootMessageId: "root",
     inReplyToMessageId,
     referenceMessageIds,
     availability: "available",
     subject: messageId,
     author: "Developer <developer@example.com>",
+    to: [],
+    cc: [],
     sentAt: "2026-08-15T12:00:00Z",
-    bodyPreview: messageId,
+    body: messageId,
     patch: null,
+    mailingLists: [],
+    subsystems: [],
+    loreUrl: "https://lore.kernel.org/r/" + messageId,
   };
 }
 

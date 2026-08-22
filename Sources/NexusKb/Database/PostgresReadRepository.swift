@@ -553,192 +553,14 @@ struct PostgresReadRepository: Sendable {
     ) async throws -> MessageDetail? {
         let rows = try await client.query(
             """
-            SELECT
-                message.message_id,
-                thread.root_message_id,
-                message.in_reply_to,
-                message.references_ids,
-                message.is_placeholder,
-                message.subject,
-                message.author,
-                message.sent_at,
-                message.body,
-                patch_data.part_index,
-                patch_data.total_parts,
-                recipient_data.to_names,
-                recipient_data.to_emails,
-                recipient_data.cc_names,
-                recipient_data.cc_emails,
-                mailing_data.names,
-                mailing_data.archive_groups,
-                subsystem_data.names,
-                subsystem_data.addresses
-            FROM messages AS message
-            JOIN threads AS thread
-              ON thread.id = message.thread_id
-            LEFT JOIN LATERAL (
-                SELECT
-                    COALESCE(patch.part_index, 0) AS part_index,
-                    patchset.total_parts
-                FROM patchsets AS patchset
-                LEFT JOIN patches AS patch
-                  ON patch.patchset_id = patchset.id
-                 AND patch.message_id = message.message_id
-                WHERE patchset.cover_letter_message_id = message.message_id
-                   OR patch.message_id IS NOT NULL
-                ORDER BY patchset.id
-                LIMIT 1
-            ) AS patch_data ON true
-            LEFT JOIN LATERAL (
-                SELECT
-                    COALESCE(
-                        array_agg(
-                            COALESCE(person.name, '')
-                            ORDER BY person.email
-                        )
-                            FILTER (WHERE recipient.recipient_type = 'To'),
-                        ARRAY[]::text[]
-                    ) AS to_names,
-                    COALESCE(
-                        array_agg(person.email ORDER BY person.email)
-                            FILTER (WHERE recipient.recipient_type = 'To'),
-                        ARRAY[]::text[]
-                    ) AS to_emails,
-                    COALESCE(
-                        array_agg(
-                            COALESCE(person.name, '')
-                            ORDER BY person.email
-                        )
-                            FILTER (WHERE recipient.recipient_type = 'Cc'),
-                        ARRAY[]::text[]
-                    ) AS cc_names,
-                    COALESCE(
-                        array_agg(person.email ORDER BY person.email)
-                            FILTER (WHERE recipient.recipient_type = 'Cc'),
-                        ARRAY[]::text[]
-                    ) AS cc_emails
-                FROM messages_recipients AS recipient
-                JOIN people AS person
-                  ON person.id = recipient.person_id
-                WHERE recipient.message_id = message.id
-            ) AS recipient_data ON true
-            LEFT JOIN LATERAL (
-                SELECT
-                    COALESCE(
-                        array_agg(data.name ORDER BY data.archive_group),
-                        ARRAY[]::text[]
-                    ) AS names,
-                    COALESCE(
-                        array_agg(data.archive_group ORDER BY data.archive_group),
-                        ARRAY[]::text[]
-                    ) AS archive_groups
-                FROM (
-                    SELECT DISTINCT
-                        mailing_list.name,
-                        mailing_list.archive_group
-                    FROM messages_mailing_lists AS link
-                    JOIN mailing_lists AS mailing_list
-                      ON mailing_list.id = link.mailing_list_id
-                    WHERE link.message_id = message.id
-                ) AS data
-            ) AS mailing_data ON true
-            LEFT JOIN LATERAL (
-                SELECT
-                    COALESCE(
-                        array_agg(subsystem.name ORDER BY subsystem.name),
-                        ARRAY[]::text[]
-                    ) AS names,
-                    COALESCE(
-                        array_agg(
-                            COALESCE(subsystem.mailing_list_address, '')
-                            ORDER BY subsystem.name
-                        ),
-                        ARRAY[]::text[]
-                    ) AS addresses
-                FROM messages_subsystems AS link
-                JOIN subsystems AS subsystem
-                  ON subsystem.id = link.subsystem_id
-                WHERE link.message_id = message.id
-            ) AS subsystem_data ON true
+            \(unescaped: messageProjectionSQL)
             WHERE message.message_id = \(messageID.value)
             """,
             logger: logger
         )
 
         for try await row in rows {
-            let cells = Array(row)
-            let storedMessageID = try cells[0]
-                .decode(String.self)
-            let rootMessageID = try cells[1]
-                .decode(String.self)
-            let inReplyTo = try cells[2]
-                .decode(String?.self)
-            let references = try cells[3]
-                .decode([String].self)
-            let isPlaceholder = try cells[4]
-                .decode(Bool.self)
-            let subject = try cells[5]
-                .decode(String?.self)
-            let author = try cells[6]
-                .decode(String?.self)
-            let sentAt = try cells[7]
-                .decode(Date?.self)
-            let body = try cells[8]
-                .decode(String.self)
-            let partIndex = try cells[9]
-                .decode(Int32?.self)
-            let totalParts = try cells[10]
-                .decode(Int32?.self)
-            let toNames = try cells[11]
-                .decode([String].self)
-            let toEmails = try cells[12]
-                .decode([String].self)
-            let ccNames = try cells[13]
-                .decode([String].self)
-            let ccEmails = try cells[14]
-                .decode([String].self)
-            let mailingNames = try cells[15]
-                .decode([String].self)
-            let mailingGroups = try cells[16]
-                .decode([String].self)
-            let subsystemNames = try cells[17]
-                .decode([String].self)
-            let subsystemAddresses = try cells[18]
-                .decode([String].self)
-            let available = !isPlaceholder
-
-            return MessageDetail(
-                messageID: storedMessageID,
-                rootMessageID: rootMessageID,
-                inReplyToMessageID: inReplyTo,
-                referenceMessageIDs: references,
-                availability:
-                    available ? .available : .missing,
-                subject: available ? subject : nil,
-                author: available ? author : nil,
-                to: zipMailboxes(
-                    names: toNames,
-                    emails: toEmails
-                ),
-                cc: zipMailboxes(
-                    names: ccNames,
-                    emails: ccEmails
-                ),
-                sentAt: available ? sentAt : nil,
-                body: available ? body : nil,
-                patchPartIndex:
-                    available ? partIndex : nil,
-                patchTotalParts:
-                    available ? totalParts : nil,
-                mailingLists: zipMailingLists(
-                    names: mailingNames,
-                    archiveGroups: mailingGroups
-                ),
-                subsystems: zipSubsystems(
-                    names: subsystemNames,
-                    addresses: subsystemAddresses
-                )
-            )
+            return try decodeMessageDetail(row)
         }
 
         return nil
@@ -900,50 +722,88 @@ struct PostgresReadRepository: Sendable {
 
     private func decodeThreadMessages(
         _ rows: PostgresRowSequence
-    ) async throws -> [ThreadMessageSummary] {
-        var values: [ThreadMessageSummary] = []
+    ) async throws -> [ThreadMessage] {
+        var values: [ThreadMessage] = []
 
         for try await row in rows {
-            let value = try row.decode(
-                (
-                    String,
-                    String?,
-                    [String],
-                    Bool,
-                    String?,
-                    String?,
-                    Date?,
-                    String,
-                    Int32?,
-                    Int32?,
-                    Date
-                ).self
-            )
-
-            let available = !value.3
-
             values.append(
-                ThreadMessageSummary(
-                    messageID: value.0,
-                    inReplyToMessageID: value.1,
-                    referenceMessageIDs: value.2,
-                    availability:
-                        available ? .available : .missing,
-                    subject: available ? value.4 : nil,
-                    author: available ? value.5 : nil,
-                    sentAt: available ? value.6 : nil,
-                    bodyPreview:
-                        available ? value.7 : nil,
-                    patchPartIndex:
-                        available ? value.8 : nil,
-                    patchTotalParts:
-                        available ? value.9 : nil,
-                    sortAt: value.10
+                ThreadMessage(
+                    detail: try decodeMessageDetail(row),
+                    sortAt: try Array(row)[19]
+                        .decode(Date.self)
                 )
             )
         }
 
         return values
+    }
+
+    private func decodeMessageDetail(
+        _ row: PostgresRow
+    ) throws -> MessageDetail {
+        let cells = Array(row)
+        let isPlaceholder = try cells[4]
+            .decode(Bool.self)
+        let available = !isPlaceholder
+
+        return MessageDetail(
+            messageID: try cells[0]
+                .decode(String.self),
+            rootMessageID: try cells[1]
+                .decode(String.self),
+            inReplyToMessageID: try cells[2]
+                .decode(String?.self),
+            referenceMessageIDs: try cells[3]
+                .decode([String].self),
+            availability:
+                available ? .available : .missing,
+            subject: available
+                ? try cells[5].decode(String?.self)
+                : nil,
+            author: available
+                ? try cells[6].decode(String?.self)
+                : nil,
+            to: available
+                ? zipMailboxes(
+                    names: try cells[11]
+                        .decode([String].self),
+                    emails: try cells[12]
+                        .decode([String].self)
+                )
+                : [],
+            cc: available
+                ? zipMailboxes(
+                    names: try cells[13]
+                        .decode([String].self),
+                    emails: try cells[14]
+                        .decode([String].self)
+                )
+                : [],
+            sentAt: available
+                ? try cells[7].decode(Date?.self)
+                : nil,
+            body: available
+                ? try cells[8].decode(String.self)
+                : nil,
+            patchPartIndex: available
+                ? try cells[9].decode(Int32?.self)
+                : nil,
+            patchTotalParts: available
+                ? try cells[10].decode(Int32?.self)
+                : nil,
+            mailingLists: zipMailingLists(
+                names: try cells[15]
+                    .decode([String].self),
+                archiveGroups: try cells[16]
+                    .decode([String].self)
+            ),
+            subsystems: zipSubsystems(
+                names: try cells[17]
+                    .decode([String].self),
+                addresses: try cells[18]
+                    .decode([String].self)
+            )
+        )
     }
 
     private func makeThreadCursor(
@@ -967,7 +827,7 @@ struct PostgresReadRepository: Sendable {
 
     private func makeMessageCursor(
         direction: PageDirection,
-        anchor: ThreadMessageSummary,
+        anchor: ThreadMessage,
         rootMessageID: String,
         limit: Int
     ) throws -> String {
@@ -979,7 +839,8 @@ struct PostgresReadRepository: Sendable {
                 anchorSortAtMicroseconds:
                     anchor.sortAt
                         .postgresMicrosecondsSince1970,
-                anchorMessageID: anchor.messageID,
+                anchorMessageID:
+                    anchor.detail.messageID,
                 limit: limit
             )
         )
@@ -1157,20 +1018,31 @@ struct PostgresReadRepository: Sendable {
         """
         SELECT
             message.message_id,
+            thread.root_message_id,
             message.in_reply_to,
             message.references_ids,
             message.is_placeholder,
             message.subject,
             message.author,
             message.sent_at,
-            LEFT(message.body, 280),
+            message.body,
             patch_data.part_index,
             patch_data.total_parts,
+            recipient_data.to_names,
+            recipient_data.to_emails,
+            recipient_data.cc_names,
+            recipient_data.cc_emails,
+            mailing_data.names,
+            mailing_data.archive_groups,
+            subsystem_data.names,
+            subsystem_data.addresses,
             COALESCE(
                 message.sent_at,
                 message.created_at
             ) AS sort_at
         FROM messages AS message
+        JOIN threads AS thread
+          ON thread.id = message.thread_id
         LEFT JOIN LATERAL (
             SELECT
                 COALESCE(patch.part_index, 0) AS part_index,
@@ -1184,6 +1056,77 @@ struct PostgresReadRepository: Sendable {
             ORDER BY patchset.id
             LIMIT 1
         ) AS patch_data ON true
+        LEFT JOIN LATERAL (
+            SELECT
+                COALESCE(
+                    array_agg(
+                        COALESCE(person.name, '')
+                        ORDER BY person.email
+                    )
+                        FILTER (WHERE recipient.recipient_type = 'To'),
+                    ARRAY[]::text[]
+                ) AS to_names,
+                COALESCE(
+                    array_agg(person.email ORDER BY person.email)
+                        FILTER (WHERE recipient.recipient_type = 'To'),
+                    ARRAY[]::text[]
+                ) AS to_emails,
+                COALESCE(
+                    array_agg(
+                        COALESCE(person.name, '')
+                        ORDER BY person.email
+                    )
+                        FILTER (WHERE recipient.recipient_type = 'Cc'),
+                    ARRAY[]::text[]
+                ) AS cc_names,
+                COALESCE(
+                    array_agg(person.email ORDER BY person.email)
+                        FILTER (WHERE recipient.recipient_type = 'Cc'),
+                    ARRAY[]::text[]
+                ) AS cc_emails
+            FROM messages_recipients AS recipient
+            JOIN people AS person
+              ON person.id = recipient.person_id
+            WHERE recipient.message_id = message.id
+        ) AS recipient_data ON true
+        LEFT JOIN LATERAL (
+            SELECT
+                COALESCE(
+                    array_agg(data.name ORDER BY data.archive_group),
+                    ARRAY[]::text[]
+                ) AS names,
+                COALESCE(
+                    array_agg(data.archive_group ORDER BY data.archive_group),
+                    ARRAY[]::text[]
+                ) AS archive_groups
+            FROM (
+                SELECT DISTINCT
+                    mailing_list.name,
+                    mailing_list.archive_group
+                FROM messages_mailing_lists AS link
+                JOIN mailing_lists AS mailing_list
+                  ON mailing_list.id = link.mailing_list_id
+                WHERE link.message_id = message.id
+            ) AS data
+        ) AS mailing_data ON true
+        LEFT JOIN LATERAL (
+            SELECT
+                COALESCE(
+                    array_agg(subsystem.name ORDER BY subsystem.name),
+                    ARRAY[]::text[]
+                ) AS names,
+                COALESCE(
+                    array_agg(
+                        COALESCE(subsystem.mailing_list_address, '')
+                        ORDER BY subsystem.name
+                    ),
+                    ARRAY[]::text[]
+                ) AS addresses
+            FROM messages_subsystems AS link
+            JOIN subsystems AS subsystem
+              ON subsystem.id = link.subsystem_id
+            WHERE link.message_id = message.id
+        ) AS subsystem_data ON true
         """
     }
 }
