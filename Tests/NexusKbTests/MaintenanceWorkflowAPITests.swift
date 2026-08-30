@@ -16,7 +16,8 @@ struct MaintenanceWorkflowAPITests {
         try await withApp(configure: configure) { app in
             let fixture = try await MaintenanceAPIFixture(
                 app: app,
-                archivePath: archive.rootURL.path
+                archivePath: archive.rootURL.path,
+                ownedMessageIDs: [archive.messageID]
             )
             do {
                 let ingest = try await trigger(
@@ -58,6 +59,10 @@ struct MaintenanceWorkflowAPITests {
                 throw error
             }
             try await fixture.remove()
+            #expect(
+                try await fixture.ownedArtifactCount()
+                    == 0
+            )
         }
     }
 
@@ -69,7 +74,8 @@ struct MaintenanceWorkflowAPITests {
         try await withApp(configure: configure) { app in
             let fixture = try await MaintenanceAPIFixture(
                 app: app,
-                archivePath: archive.rootURL.path
+                archivePath: archive.rootURL.path,
+                ownedMessageIDs: [archive.messageID]
             )
             do {
                 let ingest = try await trigger(
@@ -118,6 +124,10 @@ struct MaintenanceWorkflowAPITests {
                 throw error
             }
             try await fixture.remove()
+            #expect(
+                try await fixture.ownedArtifactCount()
+                    == 0
+            )
         }
     }
 
@@ -125,43 +135,47 @@ struct MaintenanceWorkflowAPITests {
     func createsManualIngestRun() async throws {
         try await withApp(configure: configure) { app in
             let fixture = try await MaintenanceAPIFixture(app: app)
-            defer { Task { try? await fixture.remove() } }
 
-            try await app.testing().test(
-                .POST,
-                "/api/v1/admin/mailing-lists/\(fixture.archiveGroup)/ingest",
-                beforeRequest: { request in
-                    try request.content.encode(["mode": "incremental"])
-                },
-                afterResponse: { response async throws in
-                    #expect(response.status == .accepted)
-                    let value = try response.content.decode(
-                        MaintenanceRunView.self
-                    )
-                    fixture.runIDs.append(value.id)
-                    #expect(value.kind == .ingest)
-                    #expect(value.trigger == .operator)
-                    #expect(value.state == .queued)
-                    #expect(value.stages.count == 1)
-                    #expect(value.stages.first?.operation == .ingest)
-                    #expect(value.stages.first?.mode == .incremental)
-                    #expect(
-                        response.headers.first(name: .location)
-                            == "/api/v1/admin/operations/\(value.id.uuidString.lowercased())"
-                    )
-
-                    try await app.testing().test(
-                        .GET,
-                        "/api/v1/admin/operations/\(value.id)"
-                    ) { showResponse async throws in
-                        #expect(showResponse.status == .ok)
-                        let shown = try showResponse.content.decode(
+            do {
+                try await app.testing().test(
+                    .POST,
+                    "/api/v1/admin/mailing-lists/\(fixture.archiveGroup)/ingest",
+                    beforeRequest: { request in
+                        try request.content.encode(["mode": "incremental"])
+                    },
+                    afterResponse: { response async throws in
+                        #expect(response.status == .accepted)
+                        let value = try response.content.decode(
                             MaintenanceRunView.self
                         )
-                        #expect(shown.id == value.id)
+                        fixture.runIDs.append(value.id)
+                        #expect(value.kind == .ingest)
+                        #expect(value.trigger == .operator)
+                        #expect(value.state == .queued)
+                        #expect(value.stages.count == 1)
+                        #expect(value.stages.first?.operation == .ingest)
+                        #expect(value.stages.first?.mode == .incremental)
+                        #expect(
+                            response.headers.first(name: .location)
+                                == "/api/v1/admin/operations/\(value.id.uuidString.lowercased())"
+                        )
+
+                        try await app.testing().test(
+                            .GET,
+                            "/api/v1/admin/operations/\(value.id)"
+                        ) { showResponse async throws in
+                            #expect(showResponse.status == .ok)
+                            let shown = try showResponse.content.decode(
+                                MaintenanceRunView.self
+                            )
+                            #expect(shown.id == value.id)
+                        }
                     }
-                }
-            )
+                )
+            } catch {
+                try? await fixture.remove()
+                throw error
+            }
             try await fixture.remove()
         }
     }
@@ -173,28 +187,32 @@ struct MaintenanceWorkflowAPITests {
                 app: app,
                 archivePath: nil
             )
-            defer { Task { try? await fixture.remove() } }
 
-            try await app.testing().test(
-                .POST,
-                "/api/v1/admin/mailing-lists/\(fixture.archiveGroup)/ingest",
-                beforeRequest: { request in
-                    try request.content.encode(["mode": "full"])
+            do {
+                try await app.testing().test(
+                    .POST,
+                    "/api/v1/admin/mailing-lists/\(fixture.archiveGroup)/ingest",
+                    beforeRequest: { request in
+                        try request.content.encode(["mode": "full"])
+                    }
+                ) { response async in
+                    #expect(response.status == .conflict)
                 }
-            ) { response async in
-                #expect(response.status == .conflict)
-            }
-            try await app.testing().test(
-                .POST,
-                "/api/v1/mailing-lists/\(fixture.archiveGroup)/ingest"
-            ) { response async in
-                #expect(response.status == .notFound)
-            }
-            try await app.testing().test(
-                .POST,
-                "/api/v1/webhooks/grokmirror"
-            ) { response async in
-                #expect(response.status == .notFound)
+                try await app.testing().test(
+                    .POST,
+                    "/api/v1/mailing-lists/\(fixture.archiveGroup)/ingest"
+                ) { response async in
+                    #expect(response.status == .notFound)
+                }
+                try await app.testing().test(
+                    .POST,
+                    "/api/v1/webhooks/grokmirror"
+                ) { response async in
+                    #expect(response.status == .notFound)
+                }
+            } catch {
+                try? await fixture.remove()
+                throw error
             }
             try await fixture.remove()
         }
@@ -204,60 +222,64 @@ struct MaintenanceWorkflowAPITests {
     func queuesRepeatedGrokmirrorRuns() async throws {
         try await withApp(configure: configure) { app in
             let fixture = try await MaintenanceAPIFixture(app: app)
-            defer { Task { try? await fixture.remove() } }
             var created: [MaintenanceRunView] = []
 
-            for _ in 0..<2 {
-                try await app.testing().test(
-                    .POST,
-                    "/api/v1/admin/webhooks/grokmirror"
-                ) { response async throws in
-                    #expect(response.status == .accepted)
-                    let run = try response.content.decode(
-                        MaintenanceRunView.self
-                    )
-                    fixture.runIDs.append(run.id)
-                    created.append(run)
+            do {
+                for _ in 0..<2 {
+                    try await app.testing().test(
+                        .POST,
+                        "/api/v1/admin/webhooks/grokmirror"
+                    ) { response async throws in
+                        #expect(response.status == .accepted)
+                        let run = try response.content.decode(
+                            MaintenanceRunView.self
+                        )
+                        fixture.runIDs.append(run.id)
+                        created.append(run)
+                    }
                 }
-            }
 
-            #expect(created[0].id != created[1].id)
-            let repository = PostgresMaintenanceRepository(
-                client: app.postgres
-            )
-            let secondRecord = try await repository.run(
-                id: created[1].id,
-                logger: app.logger
-            )
-            #expect(
-                try await repository.hasEarlierConflict(
-                    run: secondRecord,
+                #expect(created[0].id != created[1].id)
+                let repository = PostgresMaintenanceRepository(
+                    client: app.postgres
+                )
+                let secondRecord = try await repository.run(
+                    id: created[1].id,
                     logger: app.logger
                 )
-            )
-            try await repository.markRunSucceeded(
-                created[0].id,
-                logger: app.logger
-            )
-            #expect(
-                try await repository.hasEarlierConflict(
-                    run: secondRecord,
+                #expect(
+                    try await repository.hasEarlierConflict(
+                        run: secondRecord,
+                        logger: app.logger
+                    )
+                )
+                try await repository.markRunSucceeded(
+                    created[0].id,
                     logger: app.logger
-                ) == false
-            )
-            for run in created {
-                let ingestPositions = run.stages.indices.filter {
-                    run.stages[$0].operation == .ingest
+                )
+                #expect(
+                    try await repository.hasEarlierConflict(
+                        run: secondRecord,
+                        logger: app.logger
+                    ) == false
+                )
+                for run in created {
+                    let ingestPositions = run.stages.indices.filter {
+                        run.stages[$0].operation == .ingest
+                    }
+                    let lineagePositions = run.stages.indices.filter {
+                        run.stages[$0].operation == .patchLineage
+                    }
+                    #expect(ingestPositions.count == lineagePositions.count)
+                    if let lastIngest = ingestPositions.last,
+                       let firstLineage = lineagePositions.first
+                    {
+                        #expect(lastIngest < firstLineage)
+                    }
                 }
-                let lineagePositions = run.stages.indices.filter {
-                    run.stages[$0].operation == .patchLineage
-                }
-                #expect(ingestPositions.count == lineagePositions.count)
-                if let lastIngest = ingestPositions.last,
-                   let firstLineage = lineagePositions.first
-                {
-                    #expect(lastIngest < firstLineage)
-                }
+            } catch {
+                try? await fixture.remove()
+                throw error
             }
 
             try await fixture.remove()
@@ -289,11 +311,17 @@ private final class MaintenanceAPIFixture: @unchecked Sendable {
     let app: Application
     let archiveGroup = "maintenance-api-\(UUID().uuidString.lowercased())"
     let mailingListID: Int64
+    let ownedMessageIDs: [String]
     var runIDs: [UUID] = []
     private var removed = false
 
-    init(app: Application, archivePath: String? = "/tmp/nexus-kb-test-archive") async throws {
+    init(
+        app: Application,
+        archivePath: String? = "/tmp/nexus-kb-test-archive",
+        ownedMessageIDs: [String] = []
+    ) async throws {
         self.app = app
+        self.ownedMessageIDs = ownedMessageIDs
         let rows = try await app.postgres.query(
             """
             INSERT INTO mailing_lists (name, archive_group, archive_path)
@@ -311,7 +339,6 @@ private final class MaintenanceAPIFixture: @unchecked Sendable {
 
     func remove() async throws {
         guard !removed else { return }
-        removed = true
         for runID in runIDs {
             let jobs = try await app.postgres.query(
                 """
@@ -329,11 +356,74 @@ private final class MaintenanceAPIFixture: @unchecked Sendable {
             )
             for try await _ in runs {}
         }
+        if !ownedMessageIDs.isEmpty {
+            let threads = try await app.postgres.query(
+                """
+                DELETE FROM threads AS thread
+                WHERE thread.root_message_id = ANY(
+                        \(ownedMessageIDs)::text[]
+                      )
+                   OR EXISTS (
+                    SELECT 1
+                    FROM messages AS owned_message
+                    WHERE owned_message.thread_id = thread.id
+                      AND owned_message.message_id = ANY(
+                            \(ownedMessageIDs)::text[]
+                      )
+                )
+                """,
+                logger: app.logger
+            )
+            for try await _ in threads {}
+        }
         let lists = try await app.postgres.query(
             "DELETE FROM mailing_lists WHERE id = \(mailingListID)",
             logger: app.logger
         )
         for try await _ in lists {}
+        removed = true
+    }
+
+    func ownedArtifactCount() async throws -> Int64 {
+        guard !ownedMessageIDs.isEmpty else {
+            return 0
+        }
+
+        return try await count(
+            """
+            WITH owned_threads AS MATERIALIZED (
+                SELECT id
+                FROM threads
+                WHERE root_message_id = ANY(
+                    \(ownedMessageIDs)::text[]
+                )
+
+                UNION
+
+                SELECT thread_id
+                FROM messages
+                WHERE message_id = ANY(
+                    \(ownedMessageIDs)::text[]
+                )
+            )
+            SELECT (
+                (
+                    SELECT count(*)
+                    FROM messages
+                    WHERE message_id = ANY(
+                        \(ownedMessageIDs)::text[]
+                    )
+                )
+                + (SELECT count(*) FROM owned_threads)
+                + (
+                    SELECT count(*)
+                    FROM thread_search_documents AS document
+                    JOIN owned_threads AS owned
+                      ON owned.id = document.thread_id
+                )
+            )::bigint
+            """
+        )
     }
 
     func messageCount() async throws -> Int64 {
@@ -380,9 +470,12 @@ private final class MaintenanceAPIFixture: @unchecked Sendable {
 
 private final class MaintenanceTestArchive: @unchecked Sendable {
     let rootURL: URL
+    let messageID: String
     private let repositoryURL: URL
 
     init() throws {
+        messageID =
+            "maintenance-workflow-\(UUID().uuidString.lowercased())@example.com"
         rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "nexus-kb-maintenance-archive-\(UUID().uuidString)",
@@ -408,7 +501,7 @@ private final class MaintenanceTestArchive: @unchecked Sendable {
         let message =
             """
             From: Nexus Test <nexus@example.com>
-            Message-ID: <maintenance-workflow@example.com>
+            Message-ID: <\(messageID)>
             Subject: [PATCH] test: maintenance workflow
             Date: Fri, 21 Aug 2026 12:00:00 -0400
 
