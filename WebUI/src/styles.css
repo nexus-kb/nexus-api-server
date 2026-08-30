@@ -595,15 +595,214 @@ p {
 .message-body {
   max-width: 100%;
   margin: 8px 0;
-  overflow-x: auto;
+  overflow: hidden;
   border: 1px solid var(--code-border);
   border-radius: 3px;
-  padding: 10px;
   background: var(--code-background);
+  color: var(--text);
+  font: inherit;
+}
+
+.message-body-segment {
+  max-width: 100%;
+}
+
+.message-body-segment + .message-body-segment {
+  border-top: 1px solid var(--code-border);
+}
+
+.message-body-text {
+  margin: 0;
+  padding: 10px;
   color: var(--text);
   font: inherit;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.diff-viewer {
+  background: var(--code-background);
+}
+
+.diff-viewer-header {
+  display: flex;
+  min-height: 26px;
+  align-items: center;
+  background: var(--surface-subtle);
+}
+
+.diff-viewer-toggle {
+  display: flex;
+  flex: 1;
+  min-height: 26px;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 0;
+  padding: 3px 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+}
+
+button.diff-viewer-toggle:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.diff-viewer-chevron {
+  width: 1ch;
+  color: var(--text-dim);
+}
+
+.diff-viewer-count {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+
+.diff-viewer-raw-toggle {
+  display: flex;
+  min-height: 26px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.diff-viewer-raw-toggle input {
+  width: 14px;
+  height: 14px;
+  min-height: 0;
+  margin: 0;
+}
+
+.diff-viewer-files,
+.diff-viewer-raw {
+  border-top: 1px solid var(--code-border);
+}
+
+.diff-file + .diff-file {
+  border-top: 1px solid var(--code-border);
+}
+
+.diff-file-summary {
+  padding: 6px 10px;
+  overflow-wrap: anywhere;
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.diff-file[open] > .diff-file-summary {
+  border-bottom: 1px solid var(--code-border);
+}
+
+.diff-viewer-raw {
+  max-width: 100%;
+  margin: 0;
+  overflow-x: auto;
+  padding: 10px;
+  color: var(--text);
+  font: inherit;
+  line-height: inherit;
+  white-space: pre;
+}
+
+.message-highlight {
+  min-width: 0;
+}
+
+.message-highlight .shiki,
+.message-highlight-fallback {
+  max-width: 100%;
+  margin: 0;
+  overflow-x: auto;
+  padding: 10px;
+  font: inherit;
+  line-height: inherit;
+  white-space: pre;
+}
+
+.message-highlight .shiki code {
+  font: inherit;
+}
+
+.message-highlight-fallback {
+  background: transparent;
+  color: var(--text);
+}
+
+.message-highlight .line {
+  display: inline-block;
+  min-width: 100%;
+}
+
+.diff-line-gutter {
+  display: inline-grid;
+  width: 13ch;
+  grid-template-columns: 6ch 6ch 1ch;
+  color: var(--text-dim);
+  text-align: right;
+  user-select: none;
+}
+
+.diff-line-prefix {
+  text-align: center;
+}
+
+.diff-addition {
+  background: color-mix(in srgb, var(--discussion) 15%, transparent);
+}
+
+.diff-deletion {
+  background: color-mix(in srgb, var(--error) 15%, transparent);
+}
+
+.diff-addition .diff-line-prefix {
+  color: var(--discussion);
+}
+
+.diff-deletion .diff-line-prefix {
+  color: var(--error);
+}
+
+.diff-hunk,
+.diff-hunk span {
+  color: var(--patch) !important;
+}
+
+.diff-metadata,
+.diff-metadata span {
+  color: var(--text-muted) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .message-highlight .shiki {
+    background-color: var(--shiki-dark-bg) !important;
+    color: var(--shiki-dark) !important;
+  }
+
+  .message-highlight .shiki span {
+    color: var(--shiki-dark) !important;
+    font-style: var(--shiki-dark-font-style) !important;
+    font-weight: var(--shiki-dark-font-weight) !important;
+    text-decoration: var(--shiki-dark-text-decoration) !important;
+  }
+
+  .message-highlight .diff-hunk,
+  .message-highlight .diff-hunk span {
+    color: var(--patch) !important;
+  }
+
+  .message-highlight .diff-metadata,
+  .message-highlight .diff-metadata span {
+    color: var(--text-muted) !important;
+  }
 }
 
 .message-summary {

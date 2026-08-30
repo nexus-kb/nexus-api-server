@@ -16,6 +16,7 @@ import {
   threadRoute,
 } from "../api";
 import { absoluteDate, displayAuthor, displaySubject, plural } from "../format";
+import { MessageBody } from "../messageBody";
 import { buildThreadTree, mergeMessages, type ThreadTreeNode } from "../threadTree";
 import type { MessageDetail } from "../types";
 
@@ -138,7 +139,7 @@ function MessageNode(props: MessageNodeProps) {
               </div>
             </Show>
           </div>
-          <pre class="message-body">{message().body || "(empty message body)"}</pre>
+          <MessageBody body={message().body || "(empty message body)"} />
           <a class="lore-link" href={message().loreUrl} rel="noreferrer" target="_blank">
             View on lore.kernel.org
           </a>
