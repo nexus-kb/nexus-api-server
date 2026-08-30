@@ -233,10 +233,6 @@ export function ThreadPage() {
 
   return (
     <section aria-labelledby="thread-heading">
-      <nav class="back-link" aria-label="Breadcrumb">
-        <A href="/">← Threads</A>
-      </nav>
-
       <Show when={!rootMessageID()}>
         <div class="error-state" role="alert">
           <h1 id="thread-heading">No thread selected</h1>

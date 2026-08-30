@@ -132,7 +132,8 @@ describe("ThreadListPage", () => {
       expect(window.location.hash).not.toContain("cursor=");
     });
 
-    expect(await screen.findByText(/matching RCU grace period/)).toBeInTheDocument();
+    expect(screen.queryByText(/matching RCU grace period/)).not.toBeInTheDocument();
+    expect(screen.queryByText("score 18.25")).not.toBeInTheDocument();
     expect(screen.getByText("3 messages")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
@@ -315,6 +316,7 @@ describe("ThreadPage", () => {
     ));
 
     expect(await screen.findByText("Full root message body")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Threads" })).not.toBeInTheDocument();
     expect(screen.getByText("created 2026-08-15 12:00 UTC")).toBeInTheDocument();
     expect(screen.getByText("updated 2026-08-15 13:00 UTC")).toBeInTheDocument();
     expect(screen.getByText("2026-08-15 12:00 UTC")).toBeInTheDocument();

@@ -40,8 +40,6 @@ function patchLabel(patchSeries: readonly PatchSeries[]): string | undefined {
 
 function ThreadRow(props: {
   thread: ThreadSummary;
-  score?: number;
-  snippet?: string;
 }) {
   const thread = () => props.thread;
 
@@ -62,9 +60,6 @@ function ThreadRow(props: {
         </Show>
         <span>updated {absoluteDate(thread().lastActivityAt)}</span>
         <span>{plural(thread().messageCount, "message")}</span>
-        <Show when={props.score && props.score > 0}>
-          <span>score {props.score?.toFixed(2)}</span>
-        </Show>
         <For each={thread().mailingLists}>
           {(mailingList) => (
             <span class="meta-tag" title={mailingList.name}>
@@ -76,9 +71,6 @@ function ThreadRow(props: {
           {(subsystem) => <span class="meta-tag">{subsystem.name}</span>}
         </For>
       </div>
-      <Show when={props.snippet}>
-        {(snippet) => <p class="search-snippet">{snippet()}</p>}
-      </Show>
     </li>
   );
 }
@@ -247,13 +239,7 @@ export function ThreadListPage() {
                   }
                 >
                   <For each={page().results}>
-                    {(result) => (
-                      <ThreadRow
-                        thread={result}
-                        score={result.score}
-                        snippet={result.snippet}
-                      />
-                    )}
+                    {(result) => <ThreadRow thread={result} />}
                   </For>
                 </Show>
               </ol>
