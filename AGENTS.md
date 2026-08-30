@@ -1,10 +1,12 @@
-This repo contains Nexus-KB, a knowledge base for linux kernel developers.
-It is built using Swift 6, Vapor 4, and uses Postgres 18 as the database.
-It is developed in Xcode, use Xcode MCP tools as needed. The docker-compose.yml
-and Dockerfile is a placeholder and is not used. 
+This repo contains Nexus-KB, a knowledge base for linux kernel developers. It is
+built using Swift 6, Vapor 4, and uses Postgres 18 as the database. The
+docker-compose.yml and Dockerfile are a placeholder and are not used. 
 
 Postgres18 runs as a container on macOS and we use apple container CLI to manage
 it.
+
+The lkml lore public-inbox archives are in `~/work/lore-mirrors` for manual
+inspection if needed.
 
 I want to understand every line of code that goes into this project. Never
 create, edit, move, rename, or delete project files unless I explicitly ask you
