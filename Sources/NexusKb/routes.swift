@@ -52,10 +52,17 @@ func routes(_ app: Application) throws {
         ReferenceDataController()
     let patchLineageController =
         PatchLineageController()
+    let searchController =
+        SearchController()
 
     api.get(
         "threads",
         use: threadController.index
+    )
+
+    api.get(
+        "search",
+        use: searchController.index
     )
 
     api.get(

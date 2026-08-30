@@ -27,7 +27,6 @@ struct ThreadPageScope:
     let mailingList: String?
     let subsystem: String?
     let kind: ThreadKind?
-    let search: ThreadSearch?
 }
 
 struct ThreadCursor:
@@ -108,6 +107,23 @@ enum PaginationCursorCodec {
 
         guard cursor.version == 1 else {
             throw PaginationCursorError.unsupportedVersion
+        }
+
+        return cursor
+    }
+
+    static func decodeMailSearch(
+        _ value: String
+    ) throws -> MailSearchCursor {
+        let cursor: MailSearchCursor = try decode(
+            value
+        )
+
+        guard cursor.version == 1,
+              cursor.offset >= 0
+        else {
+            throw PaginationCursorError
+                .unsupportedVersion
         }
 
         return cursor

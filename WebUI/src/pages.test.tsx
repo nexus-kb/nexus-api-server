@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ThreadListPage } from "./pages/ThreadListPage";
 import { ThreadPage } from "./pages/ThreadPage";
 import type {
+  ThreadSearchResponse,
   MessageDetail,
   PatchLineageCollectionResponse,
   ThreadDetail,
@@ -31,6 +32,12 @@ const thread: ThreadDetail = {
       receivedParts: 2,
     },
   ],
+};
+
+const searchResult: ThreadSearchResponse["items"][number] = {
+  ...thread,
+  score: 18.25,
+  snippet: "The matching RCU grace period [text] is here.",
 };
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -73,6 +80,17 @@ describe("ThreadListPage", () => {
           ),
         );
       }
+      if (url.startsWith("/api/v1/search?")) {
+        return Promise.resolve(
+          jsonResponse({
+            items: [searchResult],
+            pagination: {
+              previousCursor: "previous-search-cursor",
+              nextCursor: "next-search-cursor",
+            },
+          } satisfies ThreadSearchResponse),
+        );
+      }
       return Promise.resolve(jsonResponse(firstPage));
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -103,19 +121,22 @@ describe("ThreadListPage", () => {
 
     await userEvent.type(
       screen.getByRole("searchbox", { name: "Search threads" }),
-      'RCU author:"Paul McKenney"',
+      'RCU subject:"grace period" author:"Paul McKenney"',
     );
     await userEvent.click(screen.getByRole("button", { name: "Search" }));
 
     await waitFor(() => {
       expect(window.location.hash).toContain(
-        "q=RCU+author%3A%22Paul+McKenney%22",
+        "q=RCU+subject%3A%22grace+period%22+author%3A%22Paul+McKenney%22",
       );
       expect(window.location.hash).not.toContain("cursor=");
     });
 
+    expect(await screen.findByText(/matching RCU grace period/)).toBeInTheDocument();
+    expect(screen.getByText("3 messages")).toBeInTheDocument();
+
     await userEvent.click(screen.getByRole("button", { name: "Next" }));
-    await waitFor(() => expect(window.location.hash).toContain("cursor=next-cursor"));
+    await waitFor(() => expect(window.location.hash).toContain("cursor=next-search-cursor"));
 
     await userEvent.click(screen.getByRole("button", { name: "Clear" }));
     await waitFor(() => {
@@ -133,13 +154,15 @@ describe("ThreadListPage", () => {
       await screen.findByRole("alert"),
     ).toHaveTextContent("Invalid search date: 2026-02-30");
 
-    const threadRequests = fetchMock.mock.calls
+    const searchRequests = fetchMock.mock.calls
       .map(([input]) => String(input))
-      .filter((url) => url.startsWith("/api/v1/threads?"));
-    expect(threadRequests.some((url) => url.includes("mailingList=netdev"))).toBe(true);
+      .filter((url) => url.startsWith("/api/v1/search?"));
+    expect(searchRequests.some((url) => url.includes("mailingList=netdev"))).toBe(true);
     expect(
-      threadRequests.some((url) =>
-        url.includes("q=RCU+author%3A%22Paul+McKenney%22"),
+      searchRequests.some((url) =>
+        url.includes(
+          "q=RCU+subject%3A%22grace+period%22+author%3A%22Paul+McKenney%22",
+        ),
       ),
     ).toBe(true);
   });

@@ -1,13 +1,21 @@
 import { A, useSearchParams } from "@solidjs/router";
 import { For, Show, createEffect, createResource, createSignal } from "solid-js";
-import { getMailingLists, getThreads, threadRoute } from "../api";
+import { getMailingLists, getThreads, searchThreads, threadRoute } from "../api";
 import { absoluteDate, displayAuthor, displaySubject, plural } from "../format";
 import type {
+  ThreadSearchResult,
   MailingListResponse,
+  Pagination,
   PatchSeries,
-  ThreadListResponse,
   ThreadSummary,
 } from "../types";
+
+interface ListingPage {
+  mode: "threads" | "search";
+  threads: ThreadSummary[];
+  results: ThreadSearchResult[];
+  pagination: Pagination;
+}
 
 function firstParameter(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -30,7 +38,11 @@ function patchLabel(patchSeries: readonly PatchSeries[]): string | undefined {
   return `${patch.status} · ${parts}`;
 }
 
-function ThreadRow(props: { thread: ThreadSummary }) {
+function ThreadRow(props: {
+  thread: ThreadSummary;
+  score?: number;
+  snippet?: string;
+}) {
   const thread = () => props.thread;
 
   return (
@@ -50,6 +62,9 @@ function ThreadRow(props: { thread: ThreadSummary }) {
         </Show>
         <span>updated {absoluteDate(thread().lastActivityAt)}</span>
         <span>{plural(thread().messageCount, "message")}</span>
+        <Show when={props.score && props.score > 0}>
+          <span>score {props.score?.toFixed(2)}</span>
+        </Show>
         <For each={thread().mailingLists}>
           {(mailingList) => (
             <span class="meta-tag" title={mailingList.name}>
@@ -61,6 +76,9 @@ function ThreadRow(props: { thread: ThreadSummary }) {
           {(subsystem) => <span class="meta-tag">{subsystem.name}</span>}
         </For>
       </div>
+      <Show when={props.snippet}>
+        {(snippet) => <p class="search-snippet">{snippet()}</p>}
+      </Show>
     </li>
   );
 }
@@ -75,8 +93,8 @@ export function ThreadListPage() {
 
   const [mailingLists, { refetch: refetchMailingLists }] =
     createResource<MailingListResponse>(() => getMailingLists());
-  const [threads, { refetch: refetchThreads }] = createResource<
-    ThreadListResponse,
+  const [listing, { refetch: refetchListing }] = createResource<
+    ListingPage,
     { mailingList?: string; q?: string; cursor?: string }
   >(
     () => ({
@@ -84,9 +102,27 @@ export function ThreadListPage() {
       q: firstParameter(searchParams.q),
       cursor: firstParameter(searchParams.cursor),
     }),
-    (parameters) => getThreads(parameters),
+    async (parameters) => {
+      if (parameters.q) {
+        const page = await searchThreads(parameters);
+        return {
+          mode: "search",
+          threads: [],
+          results: page.items,
+          pagination: page.pagination,
+        };
+      }
+
+      const page = await getThreads(parameters);
+      return {
+        mode: "threads",
+        threads: page.items,
+        results: [],
+        pagination: page.pagination,
+      };
+    },
   );
-  const visibleThreads = () => (threads.error ? undefined : threads());
+  const visibleListing = () => (listing.error ? undefined : listing());
 
   const selectMailingList = (event: Event) => {
     const value = (event.currentTarget as HTMLSelectElement).value;
@@ -141,7 +177,7 @@ export function ThreadListPage() {
             aria-label="Search threads"
             maxlength={512}
             onInput={(event) => setSearchText(event.currentTarget.value)}
-            placeholder='Subject, author:"name", date:YYYY-MM-DD'
+            placeholder='Text, subject:"phrase", author:"name", date:YYYY-MM-DD..YYYY-MM-DD'
             type="search"
             value={searchText()}
           />
@@ -165,7 +201,7 @@ export function ThreadListPage() {
         </div>
       </Show>
 
-      <Show when={threads.loading && !threads.latest}>
+      <Show when={listing.loading && !listing.latest}>
         <ol class="thread-list" aria-label="Loading threads" aria-busy="true">
           <For each={Array.from({ length: 8 })}>
             {() => (
@@ -178,38 +214,61 @@ export function ThreadListPage() {
         </ol>
       </Show>
 
-      <Show when={threads.error}>
+      <Show when={listing.error}>
         <div class="error-state" role="alert">
-          <h2>Could not load threads</h2>
-          <p>{errorMessage(threads.error)}</p>
-          <button onClick={() => void refetchThreads()} type="button">
+          <h2>Could not load results</h2>
+          <p>{errorMessage(listing.error)}</p>
+          <button onClick={() => void refetchListing()} type="button">
             Retry
           </button>
         </div>
       </Show>
 
-      <Show when={visibleThreads()}>
+      <Show when={visibleListing()}>
         {(page) => (
           <>
             <Show
-              when={page().items.length > 0}
-              fallback={<p class="empty-state">No threads match these filters.</p>}
+              when={page().mode === "search" ? page().results.length > 0 : page().threads.length > 0}
+              fallback={
+                <p class="empty-state">
+                  {page().mode === "search"
+                    ? "No threads match this search."
+                    : "No threads match these filters."}
+                </p>
+              }
             >
-              <ol class="thread-list" aria-live="polite" aria-busy={threads.loading}>
-                <For each={page().items}>{(thread) => <ThreadRow thread={thread} />}</For>
+              <ol class="thread-list" aria-live="polite" aria-busy={listing.loading}>
+                <Show
+                  when={page().mode === "search"}
+                  fallback={
+                    <For each={page().threads}>
+                      {(thread) => <ThreadRow thread={thread} />}
+                    </For>
+                  }
+                >
+                  <For each={page().results}>
+                    {(result) => (
+                      <ThreadRow
+                        thread={result}
+                        score={result.score}
+                        snippet={result.snippet}
+                      />
+                    )}
+                  </For>
+                </Show>
               </ol>
             </Show>
 
             <nav class="pagination" aria-label="Thread pages">
               <button
-                disabled={!page().pagination.previousCursor || threads.loading}
+                disabled={!page().pagination.previousCursor || listing.loading}
                 onClick={() => moveToCursor(page().pagination.previousCursor)}
                 type="button"
               >
                 Previous
               </button>
               <button
-                disabled={!page().pagination.nextCursor || threads.loading}
+                disabled={!page().pagination.nextCursor || listing.loading}
                 onClick={() => moveToCursor(page().pagination.nextCursor)}
                 type="button"
               >

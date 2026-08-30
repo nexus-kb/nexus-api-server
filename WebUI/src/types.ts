@@ -42,6 +42,16 @@ export interface ThreadListResponse {
   pagination: Pagination;
 }
 
+export interface ThreadSearchResult extends ThreadSummary {
+  score: number;
+  snippet: string;
+}
+
+export interface ThreadSearchResponse {
+  items: ThreadSearchResult[];
+  pagination: Pagination;
+}
+
 export type ThreadDetail = ThreadSummary;
 
 export interface PatchPosition {

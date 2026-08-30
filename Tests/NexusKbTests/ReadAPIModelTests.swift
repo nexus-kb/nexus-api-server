@@ -4,14 +4,15 @@ import Testing
 
 @Suite("Read API model tests")
 struct ReadAPIModelTests {
-    @Test("Thread search parses subject and selectors")
-    func threadSearchParsesSelectors() throws {
-        let parsed = try ThreadSearchParser.parse(
-            "RCU net: author:\"Paul E. McKenney\" date:2026-08-01..2026-08-20"
+    @Test("Mail search parses text and selectors")
+    func mailSearchParsesSelectors() throws {
+        let parsed = try MailSearchParser.parse(
+            "RCU net: subject:\"memory ordering\" author:\"Paul E. McKenney\" date:2026-08-01..2026-08-20"
         )
         let search = try #require(parsed)
 
-        #expect(search.subject == "RCU net:")
+        #expect(search.text == "RCU net:")
+        #expect(search.subject == "\"memory ordering\"")
         #expect(search.author == "Paul E. McKenney")
         #expect(
             search.sentAtLowerBound
@@ -31,31 +32,32 @@ struct ReadAPIModelTests {
         )
     }
 
-    @Test("Thread search preserves subject syntax")
-    func threadSearchPreservesSubjectSyntax() throws {
-        let parsed = try ThreadSearchParser.parse(
+    @Test("Mail search preserves unscoped query syntax")
+    func mailSearchPreservesTextSyntax() throws {
+        let parsed = try MailSearchParser.parse(
             "\"memory ordering\" drm: -regression"
         )
         let search = try #require(parsed)
 
         #expect(
-            search.subject
+            search.text
                 == "\"memory ordering\" drm: -regression"
         )
+        #expect(search.subject == nil)
         #expect(search.author == nil)
         #expect(search.sentAtLowerBound == nil)
         #expect(search.sentAtUpperBound == nil)
     }
 
-    @Test("Thread search parses exact and open dates")
-    func threadSearchParsesDateBounds() throws {
-        let parsedExact = try ThreadSearchParser.parse(
+    @Test("Mail search parses exact and open dates")
+    func mailSearchParsesDateBounds() throws {
+        let parsedExact = try MailSearchParser.parse(
             "date:2026-08-20"
         )
-        let parsedLowerOpen = try ThreadSearchParser.parse(
+        let parsedLowerOpen = try MailSearchParser.parse(
             "date:..2026-08-20"
         )
-        let parsedUpperOpen = try ThreadSearchParser.parse(
+        let parsedUpperOpen = try MailSearchParser.parse(
             "date:2026-08-20.."
         )
         let exact = try #require(parsedExact)
@@ -91,8 +93,11 @@ struct ReadAPIModelTests {
     }
 
     @Test(
-        "Thread search rejects malformed queries",
+        "Mail search rejects malformed queries",
         arguments: [
+            "subject:",
+            "subject:\" \"",
+            "subject:one subject:two",
             "author:",
             "author:\" \"",
             "author:one author:two",
@@ -101,11 +106,11 @@ struct ReadAPIModelTests {
             "\"unterminated",
         ]
     )
-    func threadSearchRejectsMalformedQuery(
+    func mailSearchRejectsMalformedQuery(
         query: String
     ) {
-        #expect(throws: ThreadSearchParseError.self) {
-            try ThreadSearchParser.parse(query)
+        #expect(throws: MailSearchParseError.self) {
+            try MailSearchParser.parse(query)
         }
     }
 
@@ -151,19 +156,7 @@ struct ReadAPIModelTests {
                 limit: 25,
                 mailingList: "lkml",
                 subsystem: "Networking",
-                kind: .patchSeries,
-                search: ThreadSearch(
-                    subject: "scheduler",
-                    author: "torvalds",
-                    sentAtLowerBound: Date(
-                        timeIntervalSince1970:
-                            1_787_097_600
-                    ),
-                    sentAtUpperBound: Date(
-                        timeIntervalSince1970:
-                            1_787_184_000
-                    )
-                )
+                kind: .patchSeries
             )
         )
 
@@ -181,6 +174,42 @@ struct ReadAPIModelTests {
             decoded.anchorRootMessageID
                 == cursor.anchorRootMessageID
         )
+        #expect(decoded.scope == cursor.scope)
+        #expect(!encoded.contains("+"))
+        #expect(!encoded.contains("/"))
+        #expect(!encoded.contains("="))
+    }
+
+    @Test("Mail search cursors round trip their normalized scope")
+    func mailSearchCursorRoundTrip() throws {
+        let cursor = MailSearchCursor(
+            version: 1,
+            offset: 50,
+            scope: MailSearchScope(
+                limit: 25,
+                mailingList: "linux-kernel",
+                filter: MailSearchFilter(
+                    text: "scheduler",
+                    subject: "\"grace period\"",
+                    author: "torvalds",
+                    sentAtLowerBound: Date(
+                        timeIntervalSince1970:
+                            1_787_097_600
+                    ),
+                    sentAtUpperBound: Date(
+                        timeIntervalSince1970:
+                            1_787_184_000
+                    )
+                )
+            )
+        )
+
+        let encoded = try PaginationCursorCodec
+            .encode(cursor)
+        let decoded = try PaginationCursorCodec
+            .decodeMailSearch(encoded)
+
+        #expect(decoded.offset == cursor.offset)
         #expect(decoded.scope == cursor.scope)
         #expect(!encoded.contains("+"))
         #expect(!encoded.contains("/"))
@@ -228,8 +257,7 @@ struct ReadAPIModelTests {
                 limit: 25,
                 mailingList: nil,
                 subsystem: nil,
-                kind: nil,
-                search: nil
+                kind: nil
             )
         )
 

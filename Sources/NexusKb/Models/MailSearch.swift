@@ -1,17 +1,18 @@
 import Foundation
 
-struct ThreadSearch:
+struct MailSearchFilter:
     Codable,
     Sendable,
     Equatable
 {
+    let text: String?
     let subject: String?
     let author: String?
     let sentAtLowerBound: Date?
     let sentAtUpperBound: Date?
 }
 
-enum ThreadSearchParseError:
+enum MailSearchParseError:
     Error,
     CustomStringConvertible,
     Sendable
@@ -44,22 +45,23 @@ enum ThreadSearchParseError:
     }
 }
 
-enum ThreadSearchParser {
+enum MailSearchParser {
     static func parse(
         _ query: String?
-    ) throws -> ThreadSearch? {
+    ) throws -> MailSearchFilter? {
         guard let query else {
             return nil
         }
 
         guard query.count <= 512 else {
-            throw ThreadSearchParseError
+            throw MailSearchParseError
                 .queryTooLong
         }
 
         let characters = Array(query)
         var index = 0
-        var subjectTokens: [String] = []
+        var textTokens: [String] = []
+        var subject: String?
         var author: String?
         var dateValue: String?
 
@@ -75,12 +77,32 @@ enum ThreadSearchParser {
             }
 
             if matches(
+                "subject:",
+                in: characters,
+                at: index
+            ) {
+                guard subject == nil else {
+                    throw MailSearchParseError
+                        .duplicateSelector("subject")
+                }
+
+                index += "subject:".count
+                subject = try selectorValue(
+                    named: "subject",
+                    in: characters,
+                    at: &index,
+                    preservingQuotes: true
+                )
+                continue
+            }
+
+            if matches(
                 "author:",
                 in: characters,
                 at: index
             ) {
                 guard author == nil else {
-                    throw ThreadSearchParseError
+                    throw MailSearchParseError
                         .duplicateSelector("author")
                 }
 
@@ -99,7 +121,7 @@ enum ThreadSearchParser {
                 at: index
             ) {
                 guard dateValue == nil else {
-                    throw ThreadSearchParseError
+                    throw MailSearchParseError
                         .duplicateSelector("date")
                 }
 
@@ -112,15 +134,15 @@ enum ThreadSearchParser {
                 continue
             }
 
-            subjectTokens.append(
-                try subjectToken(
+            textTokens.append(
+                try searchToken(
                     in: characters,
                     at: &index
                 )
             )
         }
 
-        let subject = subjectTokens
+        let text = textTokens
             .joined(separator: " ")
             .nilIfEmpty
         let normalizedAuthor = author?
@@ -132,7 +154,7 @@ enum ThreadSearchParser {
         if author != nil,
            normalizedAuthor == nil
         {
-            throw ThreadSearchParseError
+            throw MailSearchParseError
                 .emptySelector("author")
         }
 
@@ -140,14 +162,16 @@ enum ThreadSearchParser {
             dateBounds
         )
 
-        guard subject != nil
+        guard text != nil
+                || subject != nil
                 || normalizedAuthor != nil
                 || bounds != nil
         else {
             return nil
         }
 
-        return ThreadSearch(
+        return MailSearchFilter(
+            text: text,
             subject: subject,
             author: normalizedAuthor,
             sentAtLowerBound: bounds?.lower,
@@ -173,12 +197,13 @@ enum ThreadSearchParser {
     private static func selectorValue(
         named selector: String,
         in characters: [Character],
-        at index: inout Int
+        at index: inout Int,
+        preservingQuotes: Bool = false
     ) throws -> String {
         guard index < characters.count,
               !characters[index].isWhitespace
         else {
-            throw ThreadSearchParseError
+            throw MailSearchParseError
                 .emptySelector(selector)
         }
 
@@ -201,24 +226,39 @@ enum ThreadSearchParser {
                             || characters[index]
                                 .isWhitespace
                     else {
-                        throw ThreadSearchParseError
+                        throw MailSearchParseError
                             .invalidSelectorValue(
                                 selector
                             )
                     }
 
-                    guard !value.isEmpty else {
-                        throw ThreadSearchParseError
+                    guard !value.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ).isEmpty else {
+                        throw MailSearchParseError
                             .emptySelector(selector)
                     }
 
-                    return value
+                    guard preservingQuotes else {
+                        return value
+                    }
+
+                    let escaped = value
+                        .replacingOccurrences(
+                            of: "\\",
+                            with: "\\\\"
+                        )
+                        .replacingOccurrences(
+                            of: "\"",
+                            with: "\\\""
+                        )
+                    return "\"\(escaped)\""
                 } else {
                     value.append(character)
                 }
             }
 
-            throw ThreadSearchParseError
+            throw MailSearchParseError
                 .unterminatedQuote
         }
 
@@ -235,14 +275,14 @@ enum ThreadSearchParser {
         )
 
         guard !value.isEmpty else {
-            throw ThreadSearchParseError
+            throw MailSearchParseError
                 .emptySelector(selector)
         }
 
         return value
     }
 
-    private static func subjectToken(
+    private static func searchToken(
         in characters: [Character],
         at index: inout Int
     ) throws -> String {
@@ -270,7 +310,7 @@ enum ThreadSearchParser {
         }
 
         guard !quoted else {
-            throw ThreadSearchParseError
+            throw MailSearchParseError
                 .unterminatedQuote
         }
 
@@ -302,7 +342,7 @@ enum ThreadSearchParser {
               !components[0].isEmpty
                 || !components[1].isEmpty
         else {
-            throw ThreadSearchParseError
+            throw MailSearchParseError
                 .invalidDateRange(value)
         }
 
@@ -322,7 +362,7 @@ enum ThreadSearchParser {
            let upper,
            lower >= upper
         {
-            throw ThreadSearchParseError
+            throw MailSearchParseError
                 .invalidDateRange(value)
         }
 
@@ -345,7 +385,7 @@ enum ThreadSearchParser {
               let month = Int(components[1]),
               let day = Int(components[2])
         else {
-            throw ThreadSearchParseError
+            throw MailSearchParseError
                 .invalidDate(value)
         }
 
@@ -365,7 +405,7 @@ enum ThreadSearchParser {
         guard let date = calendar.date(
             from: requested
         ) else {
-            throw ThreadSearchParseError
+            throw MailSearchParseError
                 .invalidDate(value)
         }
 
@@ -378,7 +418,7 @@ enum ThreadSearchParser {
               resolved.month == month,
               resolved.day == day
         else {
-            throw ThreadSearchParseError
+            throw MailSearchParseError
                 .invalidDate(value)
         }
 
@@ -401,7 +441,7 @@ enum ThreadSearchParser {
             value: 1,
             to: date
         ) else {
-            throw ThreadSearchParseError
+            throw MailSearchParseError
                 .invalidDate(originalValue)
         }
 

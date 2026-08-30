@@ -24,7 +24,7 @@ struct ReadAPIIntegrationTests {
 
             try await app.testing().test(
                 .GET,
-                "/api/v1/threads?limit=1&q=\(fixture.searchToken)"
+                "/api/v1/threads?limit=1"
             ) { response async throws in
                 #expect(response.status == .ok)
                 let value = try response.content.decode(
@@ -33,6 +33,18 @@ struct ReadAPIIntegrationTests {
                 #expect(value.items.count <= 1)
                 firstThread = value.items.first
                 firstPage = value
+            }
+
+            try await app.testing().test(
+                .GET,
+                "/api/v1/threads?q=\(fixture.searchToken)"
+            ) { response async throws in
+                #expect(response.status == .badRequest)
+                #expect(
+                    response.body.string.contains(
+                        "Thread search moved"
+                    )
+                )
             }
 
             if let firstPage,

@@ -1,4 +1,5 @@
 import type {
+  ThreadSearchResponse,
   MailingListResponse,
   MessageDetail,
   PatchLineage,
@@ -25,6 +26,12 @@ export class ApiError extends Error {
 
 export interface ThreadListParameters {
   mailingList?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface ThreadSearchParameters {
+  mailingList?: string;
   q?: string;
   cursor?: string;
   limit?: number;
@@ -41,10 +48,28 @@ export function threadRoute(messageID: string): string {
 
 export function threadListURL({
   mailingList,
-  q,
   cursor,
   limit = 25,
 }: ThreadListParameters = {}): string {
+  const query = new URLSearchParams({ limit: String(limit) });
+
+  if (mailingList) {
+    query.set("mailingList", mailingList);
+  }
+
+  if (cursor) {
+    query.set("cursor", cursor);
+  }
+
+  return `/api/v1/threads?${query.toString()}`;
+}
+
+export function threadSearchURL({
+  mailingList,
+  q,
+  cursor,
+  limit = 25,
+}: ThreadSearchParameters): string {
   const query = new URLSearchParams({ limit: String(limit) });
 
   if (mailingList) {
@@ -59,7 +84,7 @@ export function threadListURL({
     query.set("cursor", cursor);
   }
 
-  return `/api/v1/threads?${query.toString()}`;
+  return `/api/v1/search?${query.toString()}`;
 }
 
 async function fetchJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
@@ -91,6 +116,13 @@ export function getThreads(
   signal?: AbortSignal,
 ): Promise<ThreadListResponse> {
   return fetchJSON(threadListURL(parameters), signal);
+}
+
+export function searchThreads(
+  parameters: ThreadSearchParameters,
+  signal?: AbortSignal,
+): Promise<ThreadSearchResponse> {
+  return fetchJSON(threadSearchURL(parameters), signal);
 }
 
 export function getMailingLists(signal?: AbortSignal): Promise<MailingListResponse> {

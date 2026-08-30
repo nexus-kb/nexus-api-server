@@ -71,46 +71,6 @@ struct PostgresReadRepository: Sendable {
                             )
                         )
                       )
-                      AND (
-                        \(scope.search?.subject == nil)
-                        OR t.subject_search
-                            @@ websearch_to_tsquery(
-                                'simple',
-                                \(scope.search?.subject)
-                            )
-                      )
-                      AND (
-                        (
-                            \(scope.search?.author == nil)
-                            AND \(scope.search?.sentAtLowerBound == nil)
-                            AND \(scope.search?.sentAtUpperBound == nil)
-                        )
-                        OR EXISTS (
-                            SELECT 1
-                            FROM messages AS search_root
-                            WHERE search_root.message_id =
-                                    t.root_message_id
-                              AND NOT search_root.is_placeholder
-                              AND (
-                                \(scope.search?.author == nil)
-                                OR search_root.author_search
-                                    @@ plainto_tsquery(
-                                        'simple',
-                                        \(scope.search?.author)
-                                    )
-                              )
-                              AND (
-                                \(scope.search?.sentAtLowerBound == nil)
-                                OR search_root.sent_at >=
-                                    \(scope.search?.sentAtLowerBound)
-                              )
-                              AND (
-                                \(scope.search?.sentAtUpperBound == nil)
-                                OR search_root.sent_at <
-                                    \(scope.search?.sentAtUpperBound)
-                              )
-                        )
-                      )
                     ORDER BY
                         t.last_updated_at ASC,
                         t.root_message_id ASC
@@ -181,46 +141,6 @@ struct PostgresReadRepository: Sendable {
                             )
                         )
                       )
-                      AND (
-                        \(scope.search?.subject == nil)
-                        OR t.subject_search
-                            @@ websearch_to_tsquery(
-                                'simple',
-                                \(scope.search?.subject)
-                            )
-                      )
-                      AND (
-                        (
-                            \(scope.search?.author == nil)
-                            AND \(scope.search?.sentAtLowerBound == nil)
-                            AND \(scope.search?.sentAtUpperBound == nil)
-                        )
-                        OR EXISTS (
-                            SELECT 1
-                            FROM messages AS search_root
-                            WHERE search_root.message_id =
-                                    t.root_message_id
-                              AND NOT search_root.is_placeholder
-                              AND (
-                                \(scope.search?.author == nil)
-                                OR search_root.author_search
-                                    @@ plainto_tsquery(
-                                        'simple',
-                                        \(scope.search?.author)
-                                    )
-                              )
-                              AND (
-                                \(scope.search?.sentAtLowerBound == nil)
-                                OR search_root.sent_at >=
-                                    \(scope.search?.sentAtLowerBound)
-                              )
-                              AND (
-                                \(scope.search?.sentAtUpperBound == nil)
-                                OR search_root.sent_at <
-                                    \(scope.search?.sentAtUpperBound)
-                              )
-                        )
-                      )
                     ORDER BY
                         t.last_updated_at DESC,
                         t.root_message_id DESC
@@ -281,46 +201,6 @@ struct PostgresReadRepository: Sendable {
                                 FROM patchsets AS filter_patchset
                                 WHERE filter_patchset.thread_id = t.id
                             )
-                        )
-                      )
-                      AND (
-                        \(scope.search?.subject == nil)
-                        OR t.subject_search
-                            @@ websearch_to_tsquery(
-                                'simple',
-                                \(scope.search?.subject)
-                            )
-                      )
-                      AND (
-                        (
-                            \(scope.search?.author == nil)
-                            AND \(scope.search?.sentAtLowerBound == nil)
-                            AND \(scope.search?.sentAtUpperBound == nil)
-                        )
-                        OR EXISTS (
-                            SELECT 1
-                            FROM messages AS search_root
-                            WHERE search_root.message_id =
-                                    t.root_message_id
-                              AND NOT search_root.is_placeholder
-                              AND (
-                                \(scope.search?.author == nil)
-                                OR search_root.author_search
-                                    @@ plainto_tsquery(
-                                        'simple',
-                                        \(scope.search?.author)
-                                    )
-                              )
-                              AND (
-                                \(scope.search?.sentAtLowerBound == nil)
-                                OR search_root.sent_at >=
-                                    \(scope.search?.sentAtLowerBound)
-                              )
-                              AND (
-                                \(scope.search?.sentAtUpperBound == nil)
-                                OR search_root.sent_at <
-                                    \(scope.search?.sentAtUpperBound)
-                              )
                         )
                       )
                     ORDER BY
@@ -628,6 +508,42 @@ struct PostgresReadRepository: Sendable {
         }
 
         return values
+    }
+
+    func threads(
+        threadIDs: [Int64],
+        logger: Logger
+    ) async throws -> [ThreadSummary] {
+        guard !threadIDs.isEmpty else {
+            return []
+        }
+
+        let rows = try await client.query(
+            """
+            WITH requested AS (
+                SELECT
+                    value.thread_id,
+                    value.ordinality
+                FROM unnest(
+                    \(threadIDs)::bigint[]
+                ) WITH ORDINALITY
+                  AS value(thread_id, ordinality)
+            ),
+            page AS MATERIALIZED (
+                SELECT
+                    thread.*,
+                    requested.ordinality
+                FROM requested
+                JOIN threads AS thread
+                  ON thread.id = requested.thread_id
+            )
+            \(unescaped: threadProjectionSQL)
+            ORDER BY t.ordinality
+            """,
+            logger: logger
+        )
+
+        return try await decodeThreads(rows)
     }
 
     private func threadDatabaseID(
